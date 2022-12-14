@@ -4,7 +4,7 @@ EN: Analysis and visualisation of active OSM users in an area for QGIS.
 DE: Script zur Analyse und Visualisierung von aktiven OSM-Usern in einem bestimmten Gebiet in QGIS.
 
 ## How To Use
-1. Run this Overpass Query for the area of interest: https://overpass-turbo.eu/s/15gz
+1. Run this Overpass Query for the area of interest: https://overpass-turbo.eu/s/15gz (replace "name" and "admin_level" according to your administrative boundary of interest)
 2. Save output as csv file. If the area of interest is too large for a single query, several queries can be combined: a) Save the csv files for the different areas first, b) Remove the column headers except in the first file (Linux console: "sed 1d area_with_headers.csv > area.csv"), c) Merge the individual files into one file (Linux console: "cat part1.csv part2.csv part3.csv > total_area.csv").
 3. Start QGIS, add layer (DE: "Layer hinzufügen") as separated text file (DE: "Getrennte Textdatei als Layer hinzufügen").
 4. Save and add this point layer as a GeoPackage (gpgk) - DE: "Exportieren > Objekte speichern als"
