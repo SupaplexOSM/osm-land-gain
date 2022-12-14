@@ -265,11 +265,11 @@ if activity_weight:
 
         grid.changeAttributeValue(f.id(), grid.dataProvider().fieldNameIndex('@localist'), localist)
 
-    #zusammenhängende Felder vereinigen
-    print(time.strftime('%H:%M:%S', time.localtime()), 'Erstelle localist-Karte.')
-    grid_dissolved = processing.run('native:dissolve', { 'INPUT' : grid, 'FIELD' : ['@localist'], 'OUTPUT': 'memory:'})['OUTPUT']
-    grid_dissolved_singlepart = processing.run('native:multiparttosingleparts', { 'INPUT' : grid_dissolved, 'OUTPUT': 'memory:'})['OUTPUT']
-    QgsProject.instance().addMapLayer(grid_dissolved_singlepart, True)
+#zusammenhängende Felder vereinigen
+print(time.strftime('%H:%M:%S', time.localtime()), 'Erstelle localist-Karte.')
+grid_dissolved = processing.run('native:dissolve', { 'INPUT' : grid, 'FIELD' : ['@localist'], 'OUTPUT': 'memory:'})['OUTPUT']
+grid_dissolved_singlepart = processing.run('native:multiparttosingleparts', { 'INPUT' : grid_dissolved, 'OUTPUT': 'memory:'})['OUTPUT']
+QgsProject.instance().addMapLayer(grid_dissolved_singlepart, True)
 
 grid.removeSelection()
 nodes.removeSelection()
