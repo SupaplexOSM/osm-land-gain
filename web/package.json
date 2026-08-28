@@ -1,0 +1,20 @@
+{
+  "name": "osm-land-gain",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "h3-js": "^4.2.1",
+    "maplibre-gl": "^5.6.0",
+    "pmtiles": "^4.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
+  }
+}

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSM Landgewinn</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="board">
+        <header class="mast">
+          <h1>OSM Landgewinn</h1>
+          <p class="tagline">Wer mappt wo am aktivsten in OpenStreetMap?</p>
+          <p class="lede">
+            Die Karte zeigt die aktivsten OpenStreetMap-User in einem Gebiet.
+            Neuere Bearbeitungen zählen stärker als ältere.
+            Aktivitäten werden mit benachbarten Gitterfeldern verrechnet, sodass eher zusammenhängende Gebiete statt einzelner Flecken entstehen.
+          </p>
+          <p id="generated" class="stand"></p>
+        </header>
+        <div class="controls">
+          <div id="modes" class="pills">
+            <button type="button" data-mode="users">User</button>
+            <button type="button" data-mode="currentness">Aktivität</button>
+            <button type="button" data-mode="features">Features</button>
+          </div>
+          <div id="filters" class="pills">
+            <button type="button" data-filter="all">Alle</button>
+            <button type="button" data-filter="highway">Straßen</button>
+            <button type="button" data-filter="building">Gebäude</button>
+            <button type="button" data-filter="landuse">Landschaft</button>
+            <button type="button" data-filter="place">Einrichtungen</button>
+            <button type="button" data-filter="furniture">Stadtmöbel</button>
+          </div>
+          <div class="user-search" id="user-search-wrap">
+            <input
+              id="user-search"
+              type="search"
+              placeholder="User suchen…"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="User suchen und auswählen"
+              aria-autocomplete="list"
+              aria-controls="user-search-results"
+            />
+            <ul id="user-search-results" class="user-search-results" hidden></ul>
+          </div>
+        </div>
+        <div id="currentness-legend" class="legend hide" hidden>
+          <p class="legend-title" id="legend-title">Aktivität</p>
+          <div class="legend-bar" id="legend-bar">
+            <span class="tick tick-hover" id="legend-tick-hover" hidden></span>
+            <span class="tick tick-sel" id="legend-tick-sel" hidden></span>
+          </div>
+          <div class="legend-labels legend-levels" id="legend-labels">
+            <span>keine / sehr gering</span>
+            <span>mittelhoch</span>
+            <span>sehr hoch</span>
+          </div>
+        </div>
+        <div id="user-chip" class="user-chip hide" hidden></div>
+        <section id="cell-panel" class="card"></section>
+        <section id="viewport-panel" class="card"></section>
+        <footer>
+          Kartendaten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende.
+          Basemap: <a href="https://openfreemap.org">OpenFreeMap</a>.
+        </footer>
+      </aside>
+      <div id="map"></div>
+      <div id="loading">
+        <div class="loading-box">
+          <p class="loading-title" id="loading-title">Karte wird geladen…</p>
+          <div
+            class="loading-track"
+            id="loading-bar"
+            role="progressbar"
+            aria-labelledby="loading-title"
+            aria-describedby="loading-status"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <span id="loading-fill"></span>
+          </div>
+          <p id="loading-status" class="loading-status">Daten werden geladen…  0 %</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

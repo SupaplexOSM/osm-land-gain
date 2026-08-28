@@ -1,19 +1,59 @@
-# OSM Land Gain
-EN: Analysis and visualisation of active OSM users in an area for QGIS.
+# OSM Landgewinn
 
-DE: Script zur Analyse und Visualisierung von aktiven OSM-Usern in einem bestimmten Gebiet in QGIS.
+Interaktive MapLibre-Karte der aktivsten OpenStreetMap-User in Berlin (H3-Auflösung 9):
 
-## How To Use
-1. Run this Overpass Query for the area of interest: https://overpass-turbo.eu/s/15gz (replace "name" and "admin_level" according to your administrative boundary of interest)
-2. Save output as csv file. If the area of interest is too large for a single query, several queries can be combined: a) Save the csv files for the different areas first, b) Remove the column headers except in the first file (Linux console: "sed 1d area_with_headers.csv > area.csv"), c) Merge the individual files into one file (Linux console: "cat part1.csv part2.csv part3.csv > total_area.csv").
-3. Start QGIS, add layer (DE: "Layer hinzufügen") as separated text file (DE: "Getrennte Textdatei als Layer hinzufügen").
-4. Save and add this point layer as a GeoPackage (gpgk) - DE: "Exportieren > Objekte speichern als"
-5. Use the "Delete duplicate geometries" (DE: "Doppelte Geometrien löschen") tool on points and save them again.
-6. Add or generate a grid over the area (e.g. 500 metre hexagons) or other desired grid shapes (e.g. city districts) for which processing is to be evaluated.
-7. Adjust the layer names for points (GeoPackage) and grid and the output file path at the top of the script. Specify which data you want to receive in which form, e.g. whether you also need the output as csv file for further evaluation.
-8. Run the script.
+**[supaplexosm.github.io/osm-land-gain](https://supaplexosm.github.io/osm-land-gain/)**
 
-## Note
-This script is still in its development stage. The final goal is to weight the data in such a way that mappers who are mainly active in an area are clearly visible on a map and it becomes recognisable who is mainly mapping in a place. This can also be a playful incentive to compete with others for dominance in an area ;)
+## Datenquelle
 
-![OSM Land Gain Script Sample Image](https://wiki.openstreetmap.org/w/images/d/d7/Osm-land-gain.jpg)
+OSM-Snapshot als PBF, **ohne Overpass**.
+
+Öffentliche Geofabrik-Extracts enthalten seit 2018 keine Usernamen/UIDs (Datenschutz). Deshalb lädt die Pipeline den Berlin-Extract von [BBBike](https://download.bbbike.org/osm/bbbike/Berlin/), der Last-Editor-Metadaten mitführt:
+
+`https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf`
+
+Optional: Geofabrik-Internal (`berlin-latest-internal.osm.pbf`) mit OSM-Login.
+
+Eine GitHub Action läuft am **1. jedes Monats** (06:00 UTC) und kann manuell über *workflow_dispatch* gestartet werden.
+
+## Lokal bauen
+
+Python 3.12+ und Node 22+:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r pipeline/requirements.txt
+python -m pipeline.run --download
+
+cd web
+npm install
+npm run dev
+```
+
+Die Pipeline schreibt `web/public/data/berlin.pmtiles`, `cells.json` und `users.json` (ein Lauf für Berlin dauert etwa 10–15 Minuten). Das PBF liegt unter `pipeline/_cache/` und wird nicht committet.
+
+Nur die Vektorkacheln neu erzeugen (nach Änderungen am Tile-Export):
+
+```bash
+python -m pipeline.run --tiles-only
+```
+
+Unter den Hexagonen liegt eine dezente [OpenFreeMap](https://openfreemap.org)-Basemap (Gewässer, Wälder, Straßen, Ortsnamen).
+
+Die GitHub-Page kommt vom Branch `gh-pages` (wird von der Action befüllt). Erster Stand und monatliche Updates: Workflow *Update OSM Land Gain* (manuell oder am 1. jedes Monats).
+
+## Methodik (Kurz)
+
+- Letzter Bearbeiter jedes aktuellen OSM-Objekts (Snapshot): getaggte Nodes, Linien-Ways, Flächen (geschlossene Ways und Multipolygone mit u. a. building/landuse). Keine Routenrelationen.
+- Objekt zählt in allen geschnittenen H3-9-Zellen.
+- Index: Anzahl × Altersgewicht (&lt;1 Jahr = 1,0 … ≥5 Jahre = 0,05), plus Nachbar-Glättung (Ring 1–2) und Majority-Filter gegen Einzelfelder.
+- Filter: alle Features, Straßen (`highway=*`), Gebäude (`building=*`), Landschaft (`landuse`/`natural`/`landcover`/`water`/`waterway` sowie Parks), Einrichtungen (Läden, Gastronomie, Bildung, Hotels …) und Stadtmöbel (Bänke, Laternen, Parkplätze …).
+- Fähnchen: lokales Maximum eines Usergebiets (≥ 3 Zellen, Peak ≥ 50 % des persönlichen Maximums).
+- Krone: Aktivitätszentrum der 10 User mit der höchsten Indexsumme.
+- Gegenwärtig aktiv: letzte Berührung im Ausschnitt vor weniger als 90 Tagen.
+- Leere Felder ohne Objekte im Filter bleiben ungefärbt; schwach kartierte Felder mit Objekten: leichte Schraffur, ohne Fähnchen.
+
+## Lizenzhinweis
+
+Kartendaten © [OpenStreetMap](https://www.openstreetmap.org/copyright)-Mitwirkende.
