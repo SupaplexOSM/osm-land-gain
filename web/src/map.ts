@@ -2,9 +2,17 @@ import maplibregl from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import { colorIndexFromName, CURRENTNESS_STOPS, FEATURE_STOPS, MEEPLE, PARCHMENT } from "./colors";
 import { flagLngLat, maxFeatureCount, sparseThreshold, userActivityCollection, ACTIVITY_DOT_LEVELS, winnerColorByUid } from "./stats";
+import {
+  buildFrontSegments,
+  EMPTY_FRONTS,
+  FRONT_REF_ZOOM,
+  frontTeethGeoJSON,
+  type SnapshotOwners,
+} from "./fronts";
 import { buildTerritoryOverlays } from "./territories";
 import { FILTER_PREFIX, type CellsFile, type FilterId, type UserStat, type ViewMode } from "./types";
 import { MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, MAP_MIN_ZOOM } from "./permalink";
+import { type BBox4, unionBboxes } from "./regions";
 
 export interface MapHandles {
   map: maplibregl.Map;
@@ -13,6 +21,12 @@ export interface MapHandles {
   setHighlightUsers: (uids: number[]) => void;
   setSelection: (h3: string | null) => void;
   refreshMarkers: () => void;
+  setSnapshot: (
+    next: CellsFile,
+    nextUsers: Record<string, UserStat>,
+    pmtilesUrl: string,
+    previousOwners?: SnapshotOwners | null,
+  ) => void;
 }
 
 const LABEL_FONT = ["Noto Sans Regular"];
@@ -231,16 +245,25 @@ function softenBasemap(map: maplibregl.Map): void {
 
 export async function createMap(
   container: HTMLElement,
-  data: CellsFile,
-  users: Record<string, UserStat>,
+  initialData: CellsFile,
+  initialUsers: Record<string, UserStat>,
   onCell: (h3: string | null) => void,
   onMove: () => void,
   onHover: (h3: string | null) => void = () => {},
-  camera?: { center: [number, number]; zoom: number },
+  camera?: {
+    center: [number, number];
+    zoom: number;
+    pmtilesUrl?: string;
+    fitBboxes?: [number, number, number, number][];
+    previousOwners?: SnapshotOwners | null;
+  },
 ): Promise<MapHandles> {
   const protocol = new Protocol();
   maplibregl.addProtocol("pmtiles", protocol.tile);
-  const archiveUrl = new URL("./data/berlin.pmtiles", document.baseURI).href;
+  let data = initialData;
+  let users = initialUsers;
+  let prevOwners: SnapshotOwners | null = camera?.previousOwners ?? null;
+  let pmtilesUrl = camera?.pmtilesUrl ?? new URL("./data/berlin.pmtiles", document.baseURI).href;
 
   const map = new maplibregl.Map({
     container,
@@ -330,6 +353,7 @@ export async function createMap(
       ? 0.62
       : (["case", inUidList("uid", highlightUids), 0.92, 0.06] as maplibregl.ExpressionSpecification);
     if (map.getLayer("territories")) map.setPaintProperty("territories", "line-opacity", overlayOp);
+    if (map.getLayer("fronts")) map.setPaintProperty("fronts", "fill-opacity", overlayOp);
     const shadowOp: maplibregl.ExpressionSpecification | number = !highlighted
       ? 0.14
       : (["case", inUidList("uid", highlightUids), 0.2, 0.02] as maplibregl.ExpressionSpecification);
@@ -383,11 +407,48 @@ export async function createMap(
     return hit;
   };
 
+  const frontSegCache = new Map<FilterId, ReturnType<typeof buildFrontSegments>>();
+  const frontSegments = () => {
+    if (!prevOwners) return [];
+    let hit = frontSegCache.get(filter);
+    if (!hit) {
+      hit = buildFrontSegments(data, users, prevOwners, filter);
+      frontSegCache.set(filter, hit);
+    }
+    return hit;
+  };
+
+  let frontsBakedZoom = Number.NaN;
+  const FRONT_ZOOM_EPS = 0.03;
+  const frontDataAt = (z: number) => {
+    frontsBakedZoom = z;
+    const segs = frontSegments();
+    if (!segs.length) return EMPTY_FRONTS;
+    return frontTeethGeoJSON(segs, z);
+  };
+
   const emptyActivity = { type: "FeatureCollection" as const, features: [] as never[] };
 
+  const refreshFronts = () => {
+    const src = map.getSource("fronts") as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    const z = map.isStyleLoaded() ? map.getZoom() : FRONT_REF_ZOOM;
+    src.setData(frontDataAt(z));
+  };
+
+  /** Size teeth for the current camera zoom before this frame paints. */
+  const syncFrontsToCamera = () => {
+    if (!prevOwners || !map.isStyleLoaded() || !map.getSource("fronts")) return;
+    const z = map.getZoom();
+    if (Number.isFinite(frontsBakedZoom) && Math.abs(z - frontsBakedZoom) < FRONT_ZOOM_EPS) return;
+    refreshFronts();
+  };
+
   const refreshOverlays = () => {
+    frontsBakedZoom = Number.NaN;
     const { outlines, labels } = overlayData();
     (map.getSource("territories") as maplibregl.GeoJSONSource | undefined)?.setData(outlines);
+    refreshFronts();
     (map.getSource("territory-labels") as maplibregl.GeoJSONSource | undefined)?.setData(labels);
     (map.getSource("markers") as maplibregl.GeoJSONSource | undefined)?.setData(markerCollection());
   };
@@ -433,6 +494,11 @@ export async function createMap(
     });
   };
 
+  const onFrontZoom = () => {
+    if (!prevOwners) return;
+    syncFrontsToCamera();
+  };
+
   map.on("load", () => {
     softenBasemap(map);
     map.addImage("hatch", hatchImage());
@@ -443,7 +509,7 @@ export async function createMap(
 
     map.addSource("h3", {
       type: "vector",
-      url: "pmtiles://" + archiveUrl,
+      url: "pmtiles://" + pmtilesUrl,
       minzoom: MAP_MIN_ZOOM,
       maxzoom: 14,
       promoteId: "h",
@@ -520,6 +586,7 @@ export async function createMap(
     });
     const overlays = overlayData();
     map.addSource("territories", { type: "geojson", data: overlays.outlines });
+    map.addSource("fronts", { type: "geojson", data: EMPTY_FRONTS });
     map.addLayer({
       id: "territories-shadow",
       type: "line",
@@ -533,6 +600,16 @@ export async function createMap(
         "line-width": 4.2,
         "line-opacity": 0.14,
         "line-blur": 2.6,
+      },
+    });
+    map.addLayer({
+      id: "fronts",
+      type: "fill",
+      source: "fronts",
+      paint: {
+        "fill-color": "#2a1c12",
+        "fill-opacity": 0.62,
+        "fill-antialias": true,
       },
     });
     map.addLayer({
@@ -682,6 +759,15 @@ export async function createMap(
       },
     });
     applyPaint();
+    const boxes = (camera?.fitBboxes?.filter((b) => b.length === 4) ?? []) as BBox4[];
+    if (boxes.length) {
+      map.fitBounds(unionBboxes(boxes as [number, number, number, number][]), {
+        padding: 56,
+        maxZoom: 13,
+        duration: 0,
+      });
+    }
+    refreshFronts();
   });
 
   let selectedId: string | null = null;
@@ -727,10 +813,99 @@ export async function createMap(
     onHover(null);
   });
   map.on("moveend", onMove);
-  map.on("zoom", onPatternZoom);
+  map.on("zoom", () => {
+    onPatternZoom();
+    onFrontZoom();
+  });
+  map.on("render", () => {
+    if (!prevOwners || !map.isStyleLoaded()) return;
+    const z = map.getZoom();
+    if (Number.isFinite(frontsBakedZoom) && Math.abs(z - frontsBakedZoom) < FRONT_ZOOM_EPS) return;
+    syncFrontsToCamera();
+  });
   map.on("zoomend", () => {
     if (highlightUids.length) syncDotPatterns();
+    syncFrontsToCamera();
   });
+
+  const replaceH3Source = (url: string) => {
+    const selLayers = ["h3-line-sel", "h3-line-sel-halo"];
+    const baseLayers = ["h3-grid", "h3-hatch", "h3-fill"];
+    for (const id of [...selLayers, ...baseLayers]) {
+      if (map.getLayer(id)) map.removeLayer(id);
+    }
+    if (map.getSource("h3")) map.removeSource("h3");
+    map.addSource("h3", {
+      type: "vector",
+      url: "pmtiles://" + url,
+      minzoom: MAP_MIN_ZOOM,
+      maxzoom: 14,
+      promoteId: "h",
+    });
+    const beforeActivity = map.getLayer("user-activity-fill") ? "user-activity-fill" : undefined;
+    map.addLayer(
+      {
+        id: "h3-fill",
+        type: "fill",
+        source: "h3",
+        "source-layer": "h3",
+        paint: {
+          "fill-color": PARCHMENT,
+          "fill-opacity": 0.72,
+          "fill-antialias": true,
+          "fill-outline-color": "rgba(0,0,0,0)",
+        },
+      },
+      beforeActivity,
+    );
+    map.addLayer(
+      {
+        id: "h3-hatch",
+        type: "fill",
+        source: "h3",
+        "source-layer": "h3",
+        filter: ["==", ["get", "a_sp"], 1],
+        paint: { "fill-pattern": "hatch", "fill-opacity": 0.35 },
+      },
+      beforeActivity,
+    );
+    map.addLayer(
+      {
+        id: "h3-grid",
+        type: "line",
+        source: "h3",
+        "source-layer": "h3-grid",
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: { "line-color": "#1f2937", "line-width": 1.1, "line-opacity": 0.1 },
+      },
+      beforeActivity,
+    );
+    const beforeSel = map.getLayer("capitals-ring") ? "capitals-ring" : undefined;
+    map.addLayer(
+      {
+        id: "h3-line-sel-halo",
+        type: "line",
+        source: "h3",
+        "source-layer": "h3",
+        filter: ["==", ["get", "h"], ""],
+        paint: { "line-color": "#2563eb", "line-width": 4.2, "line-opacity": 0.95 },
+      },
+      beforeSel,
+    );
+    map.addLayer(
+      {
+        id: "h3-line-sel",
+        type: "line",
+        source: "h3",
+        "source-layer": "h3",
+        filter: ["==", ["get", "h"], ""],
+        paint: { "line-color": "#ffffff", "line-width": 1.8, "line-opacity": 1 },
+      },
+      beforeSel,
+    );
+    applySelection(selectedId);
+    applyPaint();
+  };
 
   return {
     map,
@@ -754,5 +929,19 @@ export async function createMap(
       applySelection(id);
     },
     refreshMarkers: refreshOverlays,
+    setSnapshot: (next, nextUsers, url, previousOwners) => {
+      data = next;
+      users = nextUsers;
+      pmtilesUrl = url;
+      prevOwners = previousOwners ?? null;
+      overlayCache.clear();
+      frontSegCache.clear();
+      if (map.getSource("h3")) replaceH3Source(url);
+      if (map.isStyleLoaded()) {
+        refreshOverlays();
+        refreshActivity();
+        applyPaint();
+      }
+    },
   };
 }

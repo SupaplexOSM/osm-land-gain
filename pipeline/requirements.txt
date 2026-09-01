@@ -4,3 +4,4 @@ pmtiles>=3.4.0
 mapbox-vector-tile>=2.1.0
 mercantile>=1.2.1
 shapely>=2.0.0
+requests>=2.31.0

@@ -64,6 +64,86 @@ body,
   margin-top: 0.55rem;
 }
 
+.mast .stand[hidden] {
+  display: none;
+}
+
+.snapshot-slider {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.snapshot-slider.hide {
+  display: none;
+}
+
+.snapshot-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.snapshot-slider label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.snapshot-count {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.snapshot-slider input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.snapshot-ticks {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+.snapshot-ticks button {
+  flex: 1;
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0.1rem 0.15rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.snapshot-ticks button:first-child {
+  text-align: left;
+}
+
+.snapshot-ticks button:last-child {
+  text-align: right;
+}
+
+.snapshot-ticks button.on {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.snapshot-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .controls {
   display: flex;
   flex-direction: column;
@@ -75,6 +155,11 @@ body,
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+}
+
+#regions.pills.hide,
+#regions[hidden] {
+  display: none;
 }
 
 #modes.pills {

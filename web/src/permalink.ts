@@ -13,6 +13,7 @@ export interface PermalinkState {
   mode: ViewMode;
   cell: string | null;
   userNames: string[];
+  date: string | null;
 }
 
 function isFilterId(value: string): value is FilterId {
@@ -66,6 +67,8 @@ export function parsePermalink(search = typeof location === "undefined" ? "" : l
   if (cell) out.cell = cell;
   const names = parseUserNames(search.startsWith("?") ? search : `?${search}`);
   if (names.length) out.userNames = names;
+  const date = q.get("date");
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) out.date = date;
   return out;
 }
 
@@ -78,6 +81,7 @@ export function permalinkQuery(state: PermalinkState): string {
   if (state.mode === "features") q.set("mode", "features");
   else if (state.mode === "currentness") q.set("mode", "activity");
   if (state.cell) q.set("cell", state.cell);
+  if (state.date) q.set("date", state.date);
   let query = q.toString();
   if (state.userNames.length) {
     const users = state.userNames.map((name) => encodeURIComponent(name)).join(",");

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Mapping
 
 FILTERS = ("all", "highway", "building", "landuse", "place", "furniture")
@@ -209,17 +208,103 @@ FILTER_PREFIX = {
     "furniture": "f",
 }
 
-GEOFABRIK_BERLIN_PBF = (
-    "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf"
-)
-# Public Geofabrik PBFs omit user/uid/changeset (GDPR). BBBike extracts keep last-editor metadata.
+GEOFABRIK_INTERNAL = "https://osm-internal.download.geofabrik.de"
+GEOFABRIK_COOKIE_URL = f"{GEOFABRIK_INTERNAL}/get_cookie"
+
+# Public Geofabrik PBFs omit user/uid/changeset (GDPR).
+GEOFABRIK_BERLIN_PBF = "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf"
 BBBIKE_BERLIN_PBF = "https://download.bbbike.org/osm/bbbike/Berlin/Berlin.osm.pbf"
-GEOFABRIK_INTERNAL_PBF = (
-    "https://osm-internal.download.geofabrik.de/europe/germany/berlin-latest-internal.osm.pbf"
+GEOFABRIK_INTERNAL_PBF = f"{GEOFABRIK_INTERNAL}/europe/germany/berlin-latest-internal.osm.pbf"
+
+BBox = tuple[float, float, float, float]
+
+# Approx. Berlin / Geofabrik city extract (legacy).
+BERLIN_BBOX: BBox = (13.008, 52.325, 13.770, 52.687)
+# BBBike Berlin extract header — includes Brandenburg around the city.
+BBBIKE_BERLIN_BBOX: BBox = (12.76, 52.23, 13.98, 52.82)
+LOERRACH_BBOX: BBox = (7.5274, 47.5267, 7.8302, 47.7026)
+# Dev-Testausschnitt (west, south, east, north): inneres Berlin inkl. Tempelhof–Neukölln–Mitte.
+DEV_TEST_BBOXES: tuple[BBox, ...] = (
+    (13.2753, 52.4382, 13.5005, 52.5519),
 )
 
-# Approx. Berlin / Geofabrik extract extent (used to fill empty H3 cells).
-BERLIN_BBOX = (13.008, 52.325, 13.770, 52.687)  # west, south, east, north
+MAX_SNAPSHOTS = 12
+SNAPSHOT_MONTHS = (3, 6, 9, 12)
+SNAPSHOT_DAY = 21
+
+
+def union_bbox(bboxes: tuple[BBox, ...] | list[BBox]) -> BBox:
+    if not bboxes:
+        return BERLIN_BBOX
+    return (
+        min(b[0] for b in bboxes),
+        min(b[1] for b in bboxes),
+        max(b[2] for b in bboxes),
+        max(b[3] for b in bboxes),
+    )
+
+
+@dataclass(frozen=True)
+class Source:
+    id: str
+    latest_url: str
+    history_url: str
+    bboxes: tuple[BBox, ...]
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    sources: tuple[Source, ...]
+
+    @property
+    def bboxes(self) -> tuple[BBox, ...]:
+        return tuple(b for src in self.sources for b in src.bboxes)
+
+
+PROFILES: dict[str, Profile] = {
+    "dev": Profile(
+        name="dev",
+        sources=(
+            Source(
+                id="berlin",
+                latest_url=f"{GEOFABRIK_INTERNAL}/europe/germany/berlin-latest-internal.osm.pbf",
+                history_url=f"{GEOFABRIK_INTERNAL}/europe/germany/berlin-internal.osh.pbf",
+                bboxes=DEV_TEST_BBOXES,
+            ),
+        ),
+    ),
+    "prod": Profile(
+        name="prod",
+        sources=(
+            # Berlin is a separate Geofabrik extract; Brandenburg does not include the city.
+            Source(
+                id="berlin",
+                latest_url=f"{GEOFABRIK_INTERNAL}/europe/germany/berlin-latest-internal.osm.pbf",
+                history_url=f"{GEOFABRIK_INTERNAL}/europe/germany/berlin-internal.osh.pbf",
+                bboxes=(BERLIN_BBOX,),
+            ),
+            Source(
+                id="brandenburg",
+                latest_url=f"{GEOFABRIK_INTERNAL}/europe/germany/brandenburg-latest-internal.osm.pbf",
+                history_url=f"{GEOFABRIK_INTERNAL}/europe/germany/brandenburg-internal.osh.pbf",
+                bboxes=(BBBIKE_BERLIN_BBOX,),
+            ),
+            Source(
+                id="freiburg-regbez",
+                latest_url=(
+                    f"{GEOFABRIK_INTERNAL}/europe/germany/baden-wuerttemberg/"
+                    "freiburg-regbez-latest-internal.osm.pbf"
+                ),
+                history_url=(
+                    f"{GEOFABRIK_INTERNAL}/europe/germany/baden-wuerttemberg/"
+                    "freiburg-regbez-internal.osh.pbf"
+                ),
+                bboxes=(LOERRACH_BBOX,),
+            ),
+        ),
+    ),
+}
 
 
 @dataclass
@@ -245,6 +330,19 @@ class Config:
     min_zoom: int = 10
     max_zoom: int = 14
     palette_size: int = 128
-    pbf_url: str = BBBIKE_BERLIN_PBF
-    bbox: tuple[float, float, float, float] = BERLIN_BBOX
+    bboxes: tuple[BBox, ...] = DEV_TEST_BBOXES
     extra_area_keys: tuple[str, ...] = field(default_factory=lambda: AREA_KEYS)
+    profile: str = "dev"
+
+    @property
+    def bbox(self) -> BBox:
+        return union_bbox(self.bboxes)
+
+
+def config_for_profile(name: str) -> tuple[Profile, Config]:
+    if name not in PROFILES:
+        known = ", ".join(sorted(PROFILES))
+        raise ValueError(f"Unbekanntes Profil {name!r}. Erlaubt: {known}")
+    profile = PROFILES[name]
+    cfg = Config(bboxes=profile.bboxes, profile=name)
+    return profile, cfg

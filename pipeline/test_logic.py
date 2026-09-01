@@ -158,6 +158,115 @@ def test_records_from_cells_json_both_layouts() -> None:
         assert set(new_rec["891f1d48d27ffff"]) == set(FILTERS)
 
 
+def test_cells_for_bboxes_union() -> None:
+    from pipeline.extract import cells_for_bbox, cells_for_bboxes
+
+    a = (13.39, 52.45, 13.48, 52.50)
+    b = (13.31, 52.52, 13.33, 52.53)
+    cells_a = cells_for_bbox(a, 9)
+    cells_b = cells_for_bbox(b, 9)
+    both = cells_for_bboxes((a, b), 9)
+    assert cells_a <= both
+    assert cells_b <= both
+    assert both == cells_a | cells_b
+    assert len(both) == len(cells_a) + len(cells_b)
+
+
+def test_season_labels() -> None:
+    from datetime import date
+
+    from pipeline.snapshots import is_quarter_date, snapshot_entry
+
+    spring = snapshot_entry(date(2026, 3, 21))
+    assert spring["season"] == "fruehling"
+    assert spring["short"] == "Frühling 2026"
+    assert spring["label"] == "Datenstand: Frühling 2026"
+    assert snapshot_entry(date(2026, 6, 21))["label"] == "Datenstand: Sommer 2026"
+    assert snapshot_entry(date(2026, 9, 21))["label"] == "Datenstand: Herbst 2026"
+    assert snapshot_entry(date(2026, 12, 21))["label"] == "Datenstand: Winter 2026"
+    assert snapshot_entry(date(2025, 12, 21))["short"] == "Winter 2025"
+    assert is_quarter_date(date(2026, 3, 21))
+    assert not is_quarter_date(date(2026, 3, 1))
+    odd = snapshot_entry(date(2026, 8, 31))
+    assert odd["season"] == ""
+    assert "31.08.2026" in odd["label"]
+
+
+def test_snapshot_date_for_run() -> None:
+    from datetime import date
+
+    from pipeline.snapshots import most_recent_quarter, snapshot_date_for_run
+
+    assert snapshot_date_for_run(date(2026, 9, 21)) == date(2026, 9, 21)
+    assert snapshot_date_for_run(date(2026, 8, 31)) == date(2026, 6, 21)
+    assert most_recent_quarter(date(2026, 1, 10)) == date(2025, 12, 21)
+
+
+def test_last_quarter_dates() -> None:
+    from datetime import date
+
+    from pipeline.snapshots import last_quarter_dates
+
+    dates = last_quarter_dates(12, today=date(2026, 8, 31))
+    assert dates[0] == date(2023, 9, 21)
+    assert dates[-1] == date(2026, 6, 21)
+    assert len(dates) == 12
+    assert dates == sorted(dates)
+
+
+def test_prune_and_manifest() -> None:
+    import json
+    import tempfile
+    from datetime import date
+
+    from pipeline.config import MAX_SNAPSHOTS
+    from pipeline.snapshots import prune_snapshots, write_snapshots_manifest
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        for i in range(14):
+            month = (i % 12) + 1
+            year = 2024 + i // 12
+            day = date(year, month, 21) if month in (3, 6, 9, 12) else date(year, month, 1)
+            folder = root / day.isoformat()
+            folder.mkdir()
+            (folder / "cells.json").write_text("{}", encoding="utf-8")
+        kept = prune_snapshots(root, keep=MAX_SNAPSHOTS)
+        assert len(kept) == MAX_SNAPSHOTS
+        manifest = write_snapshots_manifest(root)
+        assert len(manifest["snapshots"]) == MAX_SNAPSHOTS
+        ids = [s["id"] for s in manifest["snapshots"]]
+        assert ids == sorted(ids)
+        payload = json.loads((root / "snapshots.json").read_text(encoding="utf-8"))
+        assert payload["snapshots"][-1]["id"] == ids[-1]
+
+
+def test_parse_dates() -> None:
+    from datetime import date
+
+    from pipeline.snapshots import parse_dates
+
+    assert parse_dates("2025-12-21,2026-03-21,2026-06-21") == [
+        date(2025, 12, 21),
+        date(2026, 3, 21),
+        date(2026, 6, 21),
+    ]
+
+
+def test_profile_bboxes() -> None:
+    from pipeline.config import BBBIKE_BERLIN_BBOX, BERLIN_BBOX, DEV_TEST_BBOXES, LOERRACH_BBOX, config_for_profile
+
+    dev, cfg = config_for_profile("dev")
+    assert cfg.bboxes == DEV_TEST_BBOXES
+    assert cfg.bboxes == ((13.2753, 52.4382, 13.5005, 52.5519),)
+    assert len(dev.sources) == 1
+    prod, pcfg = config_for_profile("prod")
+    assert BERLIN_BBOX in pcfg.bboxes
+    assert BBBIKE_BERLIN_BBOX in pcfg.bboxes
+    assert LOERRACH_BBOX in pcfg.bboxes
+    assert [src.id for src in prod.sources] == ["berlin", "brandenburg", "freiburg-regbez"]
+
+
 if __name__ == "__main__":
     test_age_weight()
     test_color_stable()
@@ -167,4 +276,11 @@ if __name__ == "__main__":
     test_unique_hex_edges()
     test_compact_cells_payload_nulls_empty_rows()
     test_records_from_cells_json_both_layouts()
+    test_cells_for_bboxes_union()
+    test_season_labels()
+    test_snapshot_date_for_run()
+    test_last_quarter_dates()
+    test_prune_and_manifest()
+    test_parse_dates()
+    test_profile_bboxes()
     print("weights ok")

@@ -121,6 +121,13 @@ def cells_for_bbox(bbox: tuple[float, float, float, float], res: int) -> set[str
         return cells_for_line(outer, res)
 
 
+def cells_for_bboxes(bboxes: tuple[tuple[float, float, float, float], ...] | list[tuple[float, float, float, float]], res: int) -> set[str]:
+    cells: set[str] = set()
+    for bbox in bboxes:
+        cells.update(cells_for_bbox(bbox, res))
+    return cells
+
+
 def _latlon(node: object) -> tuple[float, float] | None:
     loc = getattr(node, "location", None)
     if loc is not None:

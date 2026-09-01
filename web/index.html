@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>OSM Landgewinn</title>
+    <meta name="description" content="Wer mappt wo am aktivsten in OpenStreetMap?" />
+    <meta property="og:title" content="OSM Landgewinn" />
+    <meta property="og:description" content="Wer mappt wo am aktivsten in OpenStreetMap?" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="de_DE" />
+    <meta property="og:url" content="https://supaplexosm.github.io/osm-land-gain/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="OSM Landgewinn" />
+    <meta name="twitter:description" content="Wer mappt wo am aktivsten in OpenStreetMap?" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -22,9 +31,19 @@
             Neuere Bearbeitungen zählen stärker als ältere.
             Aktivitäten werden mit benachbarten Gitterfeldern verrechnet, sodass eher zusammenhängende Gebiete statt einzelner Flecken entstehen.
           </p>
-          <p id="generated" class="stand"></p>
+          <p id="generated" class="stand" hidden></p>
+          <div id="snapshot-slider-wrap" class="snapshot-slider hide" hidden>
+            <div class="snapshot-head">
+              <label for="snapshot-slider" id="snapshot-label"></label>
+              <span id="snapshot-count" class="snapshot-count"></span>
+            </div>
+            <input id="snapshot-slider" type="range" min="0" max="0" step="1" value="0" aria-labelledby="snapshot-label" />
+            <div id="snapshot-ticks" class="snapshot-ticks"></div>
+            <p class="snapshot-hint">Zähne an den Gebietsgrenzen zeigen Verschiebungen zum vorherigen Datenstand.</p>
+          </div>
         </header>
         <div class="controls">
+          <div id="regions" class="pills hide" hidden></div>
           <div id="modes" class="pills">
             <button type="button" data-mode="users">User</button>
             <button type="button" data-mode="currentness">Aktivität</button>

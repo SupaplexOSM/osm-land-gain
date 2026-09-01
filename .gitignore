@@ -5,8 +5,13 @@ __pycache__/
 node_modules/
 web/dist/
 pipeline/_cache/
+pipeline/_cache/geofabrik-credentials.json
+pipeline/_cache/geofabrik.cookie
 pipeline/_tmp/
 *.osm.pbf
+*.osh.pbf
 web/public/data/*.json
 web/public/data/*.pmtiles
+web/public/data/**/*.json
+web/public/data/**/*.pmtiles
 .DS_Store

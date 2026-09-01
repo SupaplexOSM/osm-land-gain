@@ -1,5 +1,6 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { CURRENTNESS_CSS, FEATURE_CSS } from "./colors";
+import { extractSnapshotOwners, type SnapshotOwners } from "./fronts";
 import { createMap, type MapHandles } from "./map";
 import { osmExtentUrl, renderCellPanel, renderHighlightChip, renderViewportPanel } from "./panel";
 import {
@@ -23,9 +24,56 @@ import {
 } from "./stats";
 import type { CellsFile, FilterId, UserStat, ViewMode } from "./types";
 import { FILTERS, FILTER_TIPS, normalizeCellsFile } from "./types";
+import {
+  clusterBboxes,
+  initialFitBboxes,
+  regionLabel,
+  unionBboxes,
+  type BBox4,
+} from "./regions";
 import "./style.css";
 
 type ByteSlot = { loaded: number; total: number };
+
+interface Snapshot {
+  id: string;
+  date: string;
+  season: string;
+  label: string;
+  short?: string;
+}
+
+const SEASON_DE: Record<string, string> = {
+  fruehling: "Frühling",
+  sommer: "Sommer",
+  herbst: "Herbst",
+  winter: "Winter",
+};
+
+function snapshotShort(s: Snapshot): string {
+  if (s.short) return s.short;
+  const season = SEASON_DE[s.season];
+  if (season && s.date) return `${season} ${s.date.slice(0, 4)}`;
+  return s.date;
+}
+
+function snapshotCountLabel(n: number): string {
+  return n === 1 ? "1 Datenstand" : `${n} Datenstände`;
+}
+
+function snapshotUrls(id: string): { cells: string; users: string; pmtiles: string } {
+  const base = `./data/${id}`;
+  return {
+    cells: `${base}/cells.json`,
+    users: `${base}/users.json`,
+    pmtiles: new URL(`${base}/cells.pmtiles`, document.baseURI).href,
+  };
+}
+
+function previousSnapshotId(snapshots: Snapshot[], id: string): string | null {
+  const i = snapshots.findIndex((s) => s.id === id);
+  return i > 0 ? snapshots[i - 1]!.id : null;
+}
 
 async function fetchBuffer(url: string, onProgress: (loaded: number, total: number) => void): Promise<ArrayBuffer> {
   const res = await fetch(url);
@@ -87,12 +135,32 @@ async function main(): Promise<void> {
   let handles: MapHandles | undefined;
   let data: CellsFile;
   let users: Record<string, UserStat>;
+  let snapshots: Snapshot[] = [];
+  let snapshotId = "";
+  const ownerCache = new Map<string, SnapshotOwners>();
+  let previousOwners: SnapshotOwners | null = null;
 
   try {
+    const manifestRes = await fetch("./data/snapshots.json");
+    if (!manifestRes.ok) throw new Error(`snapshots.json (${manifestRes.status})`);
+    const manifest = (await manifestRes.json()) as { snapshots?: Snapshot[] };
+    snapshots = (manifest.snapshots ?? []).filter((s) => s.id);
+    if (!snapshots.length) throw new Error("snapshots.json ist leer");
+    const startLink = parsePermalink();
+    const wanted = startLink.date;
+    const startSnap =
+      (wanted && snapshots.find((s) => s.id === wanted || s.date === wanted)) || snapshots[snapshots.length - 1]!;
+    snapshotId = startSnap.id;
+    const urls = snapshotUrls(snapshotId);
+    const prevId = previousSnapshotId(snapshots, snapshotId);
+    const prevUrls = prevId ? snapshotUrls(prevId) : null;
     const slots: ByteSlot[] = [
       { loaded: 0, total: 0 },
       { loaded: 0, total: 0 },
     ];
+    if (prevUrls) {
+      slots.push({ loaded: 0, total: 0 }, { loaded: 0, total: 0 });
+    }
     const tick = () => {
       const loaded = slots.reduce((sum, s) => sum + s.loaded, 0);
       const total = slots.reduce((sum, s) => sum + s.total, 0);
@@ -103,25 +171,41 @@ async function main(): Promise<void> {
       slots[i] = { loaded, total: total || slots[i]!.total };
       tick();
     };
-    const [cellsBuf, usersBuf] = await Promise.all([
-      fetchBuffer("./data/cells.json", track(0)),
-      fetchBuffer("./data/users.json", track(1)),
+    const optionalBuffer = (url: string, onProgress: (loaded: number, total: number) => void) =>
+      fetchBuffer(url, onProgress).catch(() => null);
+    const loaded = await Promise.all([
+      fetchBuffer(urls.cells, track(0)),
+      fetchBuffer(urls.users, track(1)),
+      prevUrls ? optionalBuffer(prevUrls.cells, track(2)) : Promise.resolve(null),
+      prevUrls ? optionalBuffer(prevUrls.users, track(3)) : Promise.resolve(null),
     ]);
     setProgress(100, "Daten werden gelesen…");
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    data = normalizeCellsFile(parseJsonBuffer(cellsBuf));
-    users = parseJsonBuffer<Record<string, UserStat>>(usersBuf);
+    data = normalizeCellsFile(parseJsonBuffer(loaded[0]));
+    users = parseJsonBuffer<Record<string, UserStat>>(loaded[1]);
+    ownerCache.set(snapshotId, extractSnapshotOwners(data, users));
+    if (prevId && loaded[2] && loaded[3]) {
+      const prevData = normalizeCellsFile(parseJsonBuffer(loaded[2]));
+      const prevUsers = parseJsonBuffer<Record<string, UserStat>>(loaded[3]);
+      const owners = extractSnapshotOwners(prevData, prevUsers);
+      ownerCache.set(prevId, owners);
+      previousOwners = owners;
+    }
   } catch (err) {
-    loading.innerHTML = `<p>Daten fehlen. Pipeline zuerst ausführen:<br><code>python -m pipeline.run --download</code></p>`;
+    loading.innerHTML = `<p>Daten fehlen. Pipeline zuerst ausführen:<br><code>python -m pipeline.run --profile dev --download --history --dates 2025-12-21,2026-03-21,2026-06-21</code></p>`;
     throw err;
   }
 
   const uidByName = new Map<string, number>();
-  for (const [id, u] of Object.entries(users)) {
-    const uid = Number(id);
-    if (!uid || !u.name || u.name.startsWith("#")) continue;
-    uidByName.set(u.name, uid);
-  }
+  const rebuildUidIndex = () => {
+    uidByName.clear();
+    for (const [id, u] of Object.entries(users)) {
+      const uid = Number(id);
+      if (!uid || !u.name || u.name.startsWith("#")) continue;
+      uidByName.set(u.name, uid);
+    }
+  };
+  rebuildUidIndex();
 
   const applyLink = (link: ReturnType<typeof parsePermalink>) => {
     filter = link.filter ?? "all";
@@ -137,7 +221,47 @@ async function main(): Promise<void> {
   applyLink(startLink);
 
   const generated = $("generated");
-  generated.textContent = `Stand: ${new Date(`${data.meta.generated}T00:00:00`).toLocaleDateString("de-DE")}`;
+  const snapshotWrap = $("snapshot-slider-wrap");
+  const snapshotSlider = $("snapshot-slider") as HTMLInputElement;
+  const snapshotLabel = $("snapshot-label");
+  const snapshotCount = $("snapshot-count");
+  const snapshotTicks = $("snapshot-ticks");
+  const currentSnapshot = () => snapshots.find((s) => s.id === snapshotId) ?? snapshots[snapshots.length - 1]!;
+  const syncSnapshotLabel = () => {
+    const snap = currentSnapshot();
+    snapshotLabel.textContent = snap.label;
+    const idx = Math.max(0, snapshots.findIndex((s) => s.id === snapshotId));
+    snapshotSlider.setAttribute("aria-valuetext", snap.label);
+    snapshotSlider.setAttribute("aria-valuenow", String(idx));
+    const many = snapshots.length > 1;
+    generated.hidden = many;
+    generated.textContent = many ? "" : snap.label;
+    snapshotTicks.querySelectorAll("button").forEach((btn, i) => {
+      const on = snapshots[i]?.id === snapshotId;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  };
+  const setupSlider = () => {
+    const many = snapshots.length > 1;
+    snapshotWrap.classList.toggle("hide", !many);
+    snapshotWrap.toggleAttribute("hidden", !many);
+    snapshotSlider.min = "0";
+    snapshotSlider.max = String(Math.max(0, snapshots.length - 1));
+    snapshotSlider.value = String(Math.max(0, snapshots.findIndex((s) => s.id === snapshotId)));
+    snapshotCount.textContent = snapshotCountLabel(snapshots.length);
+    snapshotTicks.replaceChildren();
+    snapshots.forEach((s, i) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = snapshotShort(s);
+      btn.title = s.label;
+      btn.dataset.index = String(i);
+      snapshotTicks.append(btn);
+    });
+    syncSnapshotLabel();
+  };
+  setupSlider();
 
   const legend = $("currentness-legend");
   const legendTitle = $("legend-title");
@@ -228,6 +352,7 @@ async function main(): Promise<void> {
       userNames: [...highlightedUids]
         .map((uid) => users[String(uid)]?.name)
         .filter((name): name is string => Boolean(name)),
+      date: snapshotId && snapshotId !== snapshots[snapshots.length - 1]?.id ? snapshotId : null,
     });
   };
   const onCameraMove = () => {
@@ -252,6 +377,12 @@ async function main(): Promise<void> {
     {
       center: [startLink.lng ?? MAP_DEFAULT_CENTER[0], startLink.lat ?? MAP_DEFAULT_CENTER[1]],
       zoom: startLink.zoom ?? MAP_DEFAULT_ZOOM,
+      pmtilesUrl: snapshotUrls(snapshotId).pmtiles,
+      fitBboxes:
+        startLink.lat == null || startLink.lng == null
+          ? initialFitBboxes((data.meta.bboxes ?? [data.meta.bbox]) as BBox4[], MAP_DEFAULT_CENTER)
+          : undefined,
+      previousOwners,
     },
   );
   handles.setFilter(filter);
@@ -259,9 +390,102 @@ async function main(): Promise<void> {
   handles.setSelection(selected);
   handles.setHighlightUsers([...highlightedUids]);
 
-  const userIndex = Object.entries(users)
+  const regionsEl = $("regions");
+  const setupRegions = () => {
+    const boxes = (data.meta.bboxes ?? (data.meta.bbox ? [data.meta.bbox] : [])) as BBox4[];
+    const clusters = clusterBboxes(boxes);
+    const many = clusters.length > 1;
+    regionsEl.classList.toggle("hide", !many);
+    regionsEl.toggleAttribute("hidden", !many);
+    regionsEl.replaceChildren();
+    if (!many) return;
+    for (const cl of clusters) {
+      const [sw, ne] = unionBboxes(cl);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = regionLabel(cl);
+      btn.addEventListener("click", () => {
+        handles?.map.fitBounds([sw, ne], { padding: 56, maxZoom: 13, duration: 600 });
+      });
+      regionsEl.append(btn);
+    }
+  };
+  setupRegions();
+
+  let userIndex = Object.entries(users)
     .map(([id, u]) => ({ uid: Number(id), name: u.name, scores: u.scores }))
     .filter((u) => u.uid && u.name && !u.name.startsWith("#"));
+  const rebuildUserIndex = () => {
+    userIndex = Object.entries(users)
+      .map(([id, u]) => ({ uid: Number(id), name: u.name, scores: u.scores }))
+      .filter((u) => u.uid && u.name && !u.name.startsWith("#"));
+  };
+  const applySnapshot = async (nextId: string) => {
+    if (!nextId || nextId === snapshotId) {
+      setupSlider();
+      return;
+    }
+    const urls = snapshotUrls(nextId);
+    const prevId = previousSnapshotId(snapshots, nextId);
+    const prevUrls = prevId && !ownerCache.has(prevId) ? snapshotUrls(prevId) : null;
+    const optionalBuffer = (url: string) => fetchBuffer(url, () => {}).catch(() => null);
+    const loaded = await Promise.all([
+      fetchBuffer(urls.cells, () => {}),
+      fetchBuffer(urls.users, () => {}),
+      prevUrls ? optionalBuffer(prevUrls.cells) : Promise.resolve(null),
+      prevUrls ? optionalBuffer(prevUrls.users) : Promise.resolve(null),
+    ]);
+    data = normalizeCellsFile(parseJsonBuffer(loaded[0]));
+    users = parseJsonBuffer<Record<string, UserStat>>(loaded[1]);
+    snapshotId = nextId;
+    ownerCache.set(nextId, extractSnapshotOwners(data, users));
+    if (prevId && loaded[2] && loaded[3] && !ownerCache.has(prevId)) {
+      const prevData = normalizeCellsFile(parseJsonBuffer(loaded[2]));
+      const prevUsers = parseJsonBuffer<Record<string, UserStat>>(loaded[3]);
+      ownerCache.set(prevId, extractSnapshotOwners(prevData, prevUsers));
+    }
+    previousOwners = prevId ? (ownerCache.get(prevId) ?? null) : null;
+    rebuildUidIndex();
+    rebuildUserIndex();
+    if (selected && !data.cells[selected]) {
+      selected = null;
+      handles?.setSelection(null);
+    }
+    const kept = [...highlightedUids].filter((uid) => users[String(uid)]);
+    highlightedUids.clear();
+    for (const uid of kept) highlightedUids.add(uid);
+    handles?.setSnapshot(data, users, urls.pmtiles, previousOwners);
+    handles?.setFilter(filter);
+    handles?.setMode(mode);
+    handles?.setHighlightUsers([...highlightedUids]);
+    setupSlider();
+    setupRegions();
+    syncLegend();
+    refreshPanels();
+  };
+  snapshotSlider.addEventListener("input", () => {
+    const snap = snapshots[Number(snapshotSlider.value)];
+    if (!snap) return;
+    snapshotLabel.textContent = snap.label;
+    snapshotSlider.setAttribute("aria-valuetext", snap.label);
+    snapshotTicks.querySelectorAll("button").forEach((btn, i) => {
+      const on = i === Number(snapshotSlider.value);
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  });
+  snapshotSlider.addEventListener("change", () => {
+    const snap = snapshots[Number(snapshotSlider.value)];
+    if (snap) void applySnapshot(snap.id);
+  });
+  snapshotTicks.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement).closest("button");
+    if (!btn || !snapshotTicks.contains(btn)) return;
+    const snap = snapshots[Number(btn.dataset.index)];
+    if (!snap) return;
+    snapshotSlider.value = String(btn.dataset.index);
+    void applySnapshot(snap.id);
+  });
   const searchInput = $("user-search") as HTMLInputElement;
   const searchResults = $("user-search-results");
 
@@ -419,20 +643,25 @@ async function main(): Promise<void> {
 
   window.addEventListener("popstate", () => {
     const link = parsePermalink();
-    applyLink(link);
     if (!handles) return;
     handles.map.jumpTo({
       center: [link.lng ?? MAP_DEFAULT_CENTER[0], link.lat ?? MAP_DEFAULT_CENTER[1]],
       zoom: link.zoom ?? MAP_DEFAULT_ZOOM,
     });
-    handles.setFilter(filter);
-    handles.setMode(mode);
-    handles.setSelection(selected);
-    handles.setHighlightUsers([...highlightedUids]);
-    $("filters").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.getAttribute("data-filter") === filter));
-    $("modes").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.getAttribute("data-mode") === mode));
-    syncLegend();
-    refreshPanels();
+    const nextDate = link.date ?? snapshots[snapshots.length - 1]?.id;
+    const go = async () => {
+      if (nextDate && nextDate !== snapshotId) await applySnapshot(nextDate);
+      applyLink(link);
+      handles?.setFilter(filter);
+      handles?.setMode(mode);
+      handles?.setSelection(selected);
+      handles?.setHighlightUsers([...highlightedUids]);
+      $("filters").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.getAttribute("data-filter") === filter));
+      $("modes").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.getAttribute("data-mode") === mode));
+      syncLegend();
+      refreshPanels();
+    };
+    void go();
   });
 
   handles.map.on("load", () => {

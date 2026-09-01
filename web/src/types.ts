@@ -93,8 +93,12 @@ export interface CellsFile {
     sparse_count: number | Record<string, number>;
     active_days: number;
     bbox: [number, number, number, number];
+    bboxes?: [number, number, number, number][];
     cell_keys: string[];
     cell_layout?: "filter-array" | "filter-object";
+    label?: string;
+    season?: string;
+    id?: string;
   };
   cells: Record<string, Record<FilterId, PackedCell>>;
   centers?: Record<FilterId, ActivityCenter[]>;

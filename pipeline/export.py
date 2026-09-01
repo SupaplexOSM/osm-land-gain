@@ -91,6 +91,7 @@ def write_json_sidecars(
     cfg: Config,
     generated: date,
     centers: dict[str, list[dict]] | None = None,
+    snapshot: dict | None = None,
 ) -> None:
     cells_out = {cell: compact_filter_array(by_filter) for cell, by_filter in records.items()}
 
@@ -102,9 +103,12 @@ def write_json_sidecars(
         "sparse_count": dict(cfg.sparse_count),
         "active_days": 90,
         "bbox": list(cfg.bbox),
+        "bboxes": [list(b) for b in cfg.bboxes],
         "cell_keys": ["w", "s", "c", "n", "f", "k", "sp", "ci", "u"],
         "cell_layout": "filter-array",
     }
+    if snapshot:
+        meta.update(snapshot)
     (out_dir / "cells.json").write_text(
         json.dumps(
             {
@@ -333,7 +337,7 @@ def write_pmtiles(
             },
             {
                 "name": "osm-land-gain",
-                "description": "OSM Land Gain H3-9 Berlin",
+                "description": "OSM Land Gain H3-9",
                 "vector_layers": [
                     {
                         "id": "h3",

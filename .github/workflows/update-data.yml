@@ -2,7 +2,7 @@ name: Update OSM Land Gain
 
 on:
   schedule:
-    - cron: "0 6 1 * *"
+    - cron: "0 12 21 3,6,9,12 *"
   workflow_dispatch:
 
 permissions:
@@ -14,17 +14,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Restore snapshots from GitHub Pages
+        continue-on-error: true
+        run: |
+          mkdir -p web/public/data
+          git fetch origin gh-pages:refs/remotes/origin/gh-pages --depth 1
+          git archive origin/gh-pages data | tar -x -C web/public
+          echo "Vorhandene Snapshots:"
+          ls -1 web/public/data || true
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
+      - name: Install osmium-tool
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+
       - name: Install Python dependencies
         run: pip install -r pipeline/requirements.txt
 
       - name: Run analysis pipeline
-        run: python -m pipeline.run --download --out web/public/data
+        env:
+          OSM_USER: ${{ secrets.OSM_USER }}
+          OSM_PASSWORD: ${{ secrets.OSM_PASSWORD }}
+        run: |
+          SNAPSHOT=$(python -c "from pipeline.snapshots import snapshot_date_for_run; print(snapshot_date_for_run().isoformat())")
+          echo "Stichtag $SNAPSHOT"
+          python -m pipeline.run --profile prod --download --snapshot "$SNAPSHOT" --out web/public/data
 
       - uses: actions/setup-node@v4
         with:
