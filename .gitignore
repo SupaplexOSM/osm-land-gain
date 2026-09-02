@@ -10,8 +10,7 @@ pipeline/_cache/geofabrik.cookie
 pipeline/_tmp/
 *.osm.pbf
 *.osh.pbf
-web/public/data/*.json
-web/public/data/*.pmtiles
-web/public/data/**/*.json
-web/public/data/**/*.pmtiles
+# Generated snapshots live on gh-pages, not in main
+web/public/data/**
+!web/public/data/.gitkeep
 .DS_Store

@@ -1,33 +1,20 @@
 # OSM Landgewinn
 
-Interaktive MapLibre-Karte der aktivsten OpenStreetMap-User (H3-Auflösung 9):
+Interaktive Karte der aktivsten OpenStreetMap-User in einem Gebiet:
 
 **[supaplexosm.github.io/osm-land-gain](https://supaplexosm.github.io/osm-land-gain/)**
 
-## Datenquelle
+## Datenquelle und OSM-Zugang
 
-OSM-Snapshot als PBF mit Last-Editor-Metadaten, **ohne Overpass**.
-
-Öffentliche Geofabrik-Extracts enthalten seit 2018 keine Usernamen/UIDs. Die Pipeline lädt deshalb **Geofabrik Internal** (OSM-Login):
-
-- **dev:** `berlin-latest-internal.osm.pbf`, zugeschnitten auf eine Test-BBOX in Berlin (`13.2753,52.4382,13.5005,52.5519`)
-- **prod:** `berlin-latest-internal.osm.pbf` (Stadt) plus `brandenburg-latest-internal.osm.pbf` (Umland, gleiche Berlin-BBOX) und `freiburg-regbez-latest-internal.osm.pbf` (Lörrach); die Ausschnitte werden gemerged
-
-Historische Stände kommen lokal aus den zugehörigen `*-internal.osh.pbf`-History-Dateien (`osmium time-filter`).
-
-### OSM-Zugang
-
-Geofabrik Internal braucht einen OSM-Account. Die Zugangsdaten **niemals** committen oder im Chat teilen.
-
-Lokal anlegen (fragt interaktiv ab, schreibt `pipeline/_cache/geofabrik-credentials.json` mit Rechten `600`):
+Geofabrik-Extract mit User-Metadaten. Öffentliche Geofabrik-Extracts enthalten keine User-Metadaten, daher lädt die Pipeline den Internal Extract mit OSM-Login-Daten. Diesen lokal anlegen (schreibt `pipeline/_cache/geofabrik-credentials.json`):
 
 ```bash
 python -m pipeline.geofabrik --write-credentials
 ```
 
-Alternativ Umgebungsvariablen `OSM_USER` und `OSM_PASSWORD` (nicht in die Repo-Dateien schreiben).
+Einmal pro Quartal wird ein neuer Datenstand bezogen und ausgewertet. Die Datenstände der vergangenen Quartale bleiben zum Vergleich erhalten. Historische Stände können aber auch lokal aus den zugehörigen `*-internal.osh.pbf`-History-Dateien rekonstruiert werden (`osmium time-filter`).
 
-GitHub Action: Repository-Secrets `OSM_USER` und `OSM_PASSWORD` — nicht in der YAML, nur in den GitHub-Secret-Einstellungen.
+Die Karte läuft derzeit als GitHub Action; für ein automatisches Datenupdate sind die OSM-Login-Daten als Repository-Secrets `OSM_USER` und `OSM_PASSWORD` nötig.
 
 Zusätzlich: Python 3.12+, Node 22+, [osmium-tool](https://osmcode.org/osmium-tool/) (`sudo apt-get install osmium-tool`).
 
@@ -52,12 +39,30 @@ npm install
 npm run dev
 ```
 
-Die Pipeline schreibt je Stichtag nach `web/public/data/YYYY-MM-DD/` (`cells.json`, `users.json`, `cells.pmtiles`) und `web/public/data/snapshots.json`. PBFs liegen unter `pipeline/_cache/` und werden nicht committet.
+Die Pipeline schreibt je Stichtag nach `web/public/data/YYYY-MM-DD/` und dazu `web/public/data/snapshots.json`. PBFs liegen unter `pipeline/_cache/` und werden nicht committet.
+
+Damit die Karte schnell erscheint, ist ein Stichtag auf mehrere Dateien verteilt. Auf dem kritischen Pfad liegen nur die ersten fünf: rund 1,3 MB fest plus die Kacheln des sichtbaren Ausschnitts. Alles Weitere wird nachgeladen und hält nichts auf.
+
+| Datei | Inhalt |
+| --- | --- |
+| `cells.pmtiles` | Alle Hexagone mit ihren Kennzahlen; daraus wird gezeichnet |
+| `cells.json` | Metadaten, Aktivitätszentren, Farbtabelle |
+| `overlays.json.gz` | Fertig berechnete Usergebiete |
+| `fronts.json.gz` | Fertig berechnete Frontabschnitte für die Haifischzähne |
+| `users.json.gz` | Namen, Punkte und Schwerpunkte je Mapper:in |
+| `cells.bin.gz` | Top-User je Hexagon; wird im Worker nachgeladen und füllt nur die Panels |
+| `scalars.bin.gz` | Kennzahlen je Hexagon; nur die Pipeline liest sie |
 
 Nur die Vektorkacheln neu erzeugen:
 
 ```bash
 python -m pipeline.run --tiles-only --snapshot 2026-06-21
+```
+
+Ältere Snapshot-Ordner auf das aktuelle Dateiformat bringen (ohne PBF, läuft auch automatisch bei jedem Pipelinelauf):
+
+```bash
+python -m pipeline.run --upgrade
 ```
 
 Unter den Hexagonen liegt eine dezente [OpenFreeMap](https://openfreemap.org)-Basemap (Gewässer, Wälder, Straßen, Ortsnamen).
@@ -85,7 +90,7 @@ Die GitHub-Page kommt vom Branch `gh-pages`. Workflow: *Update OSM Land Gain*.
 - Filter: alle Features, Straßen (`highway=*`), Gebäude (`building=*`), Landschaft (`landuse`/`natural`/`landcover`/`water`/`waterway` sowie Parks), Einrichtungen (Läden, Gastronomie, Bildung, Hotels …) und Stadtmöbel (Bänke, Laternen, Parkplätze …).
 - Fähnchen: lokales Maximum eines Usergebiets (≥ 3 Zellen, Peak ≥ 50 % des persönlichen Maximums).
 - Krone: Aktivitätszentrum der 10 User mit der höchsten Indexsumme.
-- Gegenwärtig aktiv: letzte Berührung im Ausschnitt vor weniger als 90 Tagen (ebenfalls relativ zum Stichtag).
+- Gegenwärtig aktiv: letzte Berührung im Ausschnitt vor weniger als 40 Tagen (ebenfalls relativ zum Stichtag).
 - Leere Felder ohne Objekte im Filter bleiben ungefärbt; schwach kartierte Felder mit Objekten: leichte Schraffur, ohne Fähnchen.
 - Gebietsgrenzen: Zähne (Haifischzahnlinie) markieren Verschiebungen gegenüber dem vorherigen Quartalsstand; die Größe entspricht etwa 1, 2 oder mehr Hexfeldern. Neue Inselgebiete ohne Vorgänger richten sich nach ihrer Breite bzw. Höhe. Der älteste Stand hat keine Zähne.
 

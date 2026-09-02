@@ -1,16 +1,26 @@
 import maplibregl from "maplibre-gl";
-import { Protocol } from "pmtiles";
+import { PMTiles, Protocol } from "pmtiles";
 import { colorIndexFromName, CURRENTNESS_STOPS, FEATURE_STOPS, MEEPLE, PARCHMENT } from "./colors";
-import { flagLngLat, maxFeatureCount, sparseThreshold, userActivityCollection, ACTIVITY_DOT_LEVELS, winnerColorByUid } from "./stats";
 import {
-  buildFrontSegments,
+  ACTIVITY_DOT_LEVELS,
+  EMPTY_ACTIVITY,
+  clearStatsCaches,
+  flagLngLat,
+  maxFeatureCount,
+  sparseThreshold,
+  userActivityCollection,
+  winnerColorByUid,
+} from "./stats";
+import {
   EMPTY_FRONTS,
   FRONT_REF_ZOOM,
   frontTeethGeoJSON,
-  type SnapshotOwners,
+  type FrontSegment,
+  type PackedFronts,
 } from "./fronts";
-import { buildTerritoryOverlays } from "./territories";
-import { FILTER_PREFIX, type CellsFile, type FilterId, type UserStat, type ViewMode } from "./types";
+import { overlaysFromPacked, type OverlayBuild, type PackedOverlays } from "./territories";
+import type { TopUsers } from "./topusers";
+import { FILTER_PREFIX, type FilterId, type SnapshotCore, type TileProps, type UserStat, type ViewMode } from "./types";
 import { MAP_DEFAULT_CENTER, MAP_DEFAULT_ZOOM, MAP_MAX_ZOOM, MAP_MIN_ZOOM } from "./permalink";
 import { type BBox4, unionBboxes } from "./regions";
 
@@ -21,11 +31,15 @@ export interface MapHandles {
   setHighlightUsers: (uids: number[]) => void;
   setSelection: (h3: string | null) => void;
   refreshMarkers: () => void;
+  setOverlayOpacity: (t: number) => void;
+  /** Hand over the per-cell top users once cells.bin.gz finished loading. */
+  setTopUsers: (next: TopUsers | null) => void;
   setSnapshot: (
-    next: CellsFile,
+    next: SnapshotCore,
     nextUsers: Record<string, UserStat>,
     pmtilesUrl: string,
-    previousOwners?: SnapshotOwners | null,
+    packedOverlays?: PackedOverlays | null,
+    packedFronts?: PackedFronts | null,
   ) => void;
 }
 
@@ -98,14 +112,26 @@ function inUidList(prop: string, uids: number[]): maplibregl.ExpressionSpecifica
   return ["in", ["to-number", ["get", prop]], ["literal", uids]] as maplibregl.ExpressionSpecification;
 }
 
+const meepleExprByProp = new Map<string, maplibregl.ExpressionSpecification>();
+
 function matchMeeple(prop: string): maplibregl.ExpressionSpecification {
+  const cached = meepleExprByProp.get(prop);
+  if (cached) return cached;
   const expr: unknown[] = ["match", ["to-number", ["get", prop]]];
   MEEPLE.forEach((color, i) => {
     expr.push(i, color);
   });
   expr.push(PARCHMENT);
-  return expr as maplibregl.ExpressionSpecification;
+  const out = expr as maplibregl.ExpressionSpecification;
+  meepleExprByProp.set(prop, out);
+  return out;
 }
+
+const DIM_GRAY = "#d1d5db";
+const NO_FADE = { duration: 0 } as const;
+const H3_PAINT_LAYERS = ["h3-fill", "h3-fill-sparse", "h3-fill-dim"] as const;
+/** Matches nothing. Expression form, since ["==", 0, 1] reads as a legacy filter. */
+const HIDDEN_FILTER: maplibregl.FilterSpecification = ["boolean", false];
 
 function interpolateStops(valueExpr: unknown, stops: Array<[number, string]>): maplibregl.ExpressionSpecification {
   const expr: unknown[] = ["interpolate", ["linear"], valueExpr];
@@ -148,6 +174,23 @@ function logSize(value: number, values: number[], minSz: number, maxSz: number):
 }
 
 const BASEMAP = "https://tiles.openfreemap.org/styles/positron";
+const protocol = new Protocol();
+maplibregl.addProtocol("pmtiles", protocol.tile);
+
+/**
+ * Fetch a PMTiles header and root directory ahead of time.
+ *
+ * MapLibre can only add our vector source once the remote basemap style is up,
+ * and the archive then needs two round trips before the first tile byte moves.
+ * Warming the same protocol cache while the snapshot core is downloading takes
+ * both off the critical path.
+ */
+export function warmTiles(url: string): void {
+  const archive = new PMTiles(url);
+  protocol.add(archive);
+  void archive.getHeader().catch(() => {});
+}
+
 /** Camera limits. PMTiles maxzoom (config max_zoom) is 14; MapLibre overzooms beyond that. */
 
 /** Zoom at which the 8-column lattice looks right. Spacing follows mercator (×2 per zoom). */
@@ -210,6 +253,73 @@ function activityPatternExpr(): maplibregl.ExpressionSpecification {
   return expr as maplibregl.ExpressionSpecification;
 }
 
+const ACTIVITY_FILL_OP: maplibregl.ExpressionSpecification = [
+  "interpolate",
+  ["linear"],
+  ["to-number", ["get", "t"]],
+  0,
+  0.12,
+  1,
+  0.38,
+];
+const ACTIVITY_PATTERN_OP: maplibregl.ExpressionSpecification = [
+  "interpolate",
+  ["linear"],
+  ["to-number", ["get", "t"]],
+  0,
+  0.4,
+  1,
+  1,
+];
+
+function scaleOpacity(
+  value: number | maplibregl.ExpressionSpecification,
+  t: number,
+): number | maplibregl.ExpressionSpecification {
+  const a = Math.round(Math.max(0, Math.min(1, t)) * 100) / 100;
+  if (a === 1) return value;
+  return scaleOpacityNode(value, a) as number | maplibregl.ExpressionSpecification;
+}
+
+/** Multiply numeric outputs in opacity expressions. Avoid `["*", expr, t]`, which MapLibre can reject. */
+function scaleOpacityNode(value: unknown, a: number): unknown {
+  if (typeof value === "number") return value * a;
+  if (!Array.isArray(value) || typeof value[0] !== "string") return value;
+  const op = value[0];
+  if (op === "case") {
+    const out: unknown[] = ["case"];
+    for (let i = 1; i < value.length; i++) {
+      const output = i === value.length - 1 || i % 2 === 0;
+      out.push(output ? scaleOpacityNode(value[i], a) : value[i]);
+    }
+    return out;
+  }
+  if (op === "interpolate" || op === "interpolate-hcl" || op === "interpolate-lab") {
+    const out: unknown[] = value.slice(0, 3);
+    for (let i = 3; i < value.length; i += 2) {
+      out.push(value[i]);
+      if (i + 1 < value.length) out.push(scaleOpacityNode(value[i + 1], a));
+    }
+    return out;
+  }
+  if (op === "step") {
+    const out: unknown[] = ["step", value[1]];
+    for (let i = 2; i < value.length; i++) {
+      out.push(i % 2 === 0 ? scaleOpacityNode(value[i], a) : value[i]);
+    }
+    return out;
+  }
+  if (op === "match") {
+    const out: unknown[] = ["match", value[1]];
+    for (let i = 2; i < value.length; i++) {
+      const label = i !== value.length - 1 && (i - 2) % 2 === 0;
+      out.push(label ? value[i] : scaleOpacityNode(value[i], a));
+    }
+    return out;
+  }
+  return value;
+}
+
 function softenBasemap(map: maplibregl.Map): void {
   const layers = map.getStyle().layers ?? [];
   for (const layer of layers) {
@@ -245,24 +355,26 @@ function softenBasemap(map: maplibregl.Map): void {
 
 export async function createMap(
   container: HTMLElement,
-  initialData: CellsFile,
+  initialCore: SnapshotCore,
   initialUsers: Record<string, UserStat>,
-  onCell: (h3: string | null) => void,
+  /** Second argument are the raw tile properties, so callers avoid re-querying. */
+  onCell: (h3: string | null, props: TileProps | null) => void,
   onMove: () => void,
-  onHover: (h3: string | null) => void = () => {},
+  onHover: (h3: string | null, props: TileProps | null) => void = () => {},
   camera?: {
     center: [number, number];
     zoom: number;
     pmtilesUrl?: string;
     fitBboxes?: [number, number, number, number][];
-    previousOwners?: SnapshotOwners | null;
+    packedOverlays?: PackedOverlays | null;
+    packedFronts?: PackedFronts | null;
   },
 ): Promise<MapHandles> {
-  const protocol = new Protocol();
-  maplibregl.addProtocol("pmtiles", protocol.tile);
-  let data = initialData;
+  let core = initialCore;
   let users = initialUsers;
-  let prevOwners: SnapshotOwners | null = camera?.previousOwners ?? null;
+  let topUsers: TopUsers | null = null;
+  let packedOverlays: PackedOverlays | null = camera?.packedOverlays ?? null;
+  let packedFronts: PackedFronts | null = camera?.packedFronts ?? null;
   let pmtilesUrl = camera?.pmtilesUrl ?? new URL("./data/berlin.pmtiles", document.baseURI).href;
 
   const map = new maplibregl.Map({
@@ -288,91 +400,182 @@ export async function createMap(
   let filter: FilterId = "all";
   let mode: ViewMode = "users";
   let highlightUids: number[] = [];
+  let overlayAlpha = 1;
+  let paintStyleKey = "";
+  let opacityLogged = 0;
+  let opacityRaf = 0;
+  type OpacityPack = {
+    fill: number;
+    sparseFill: number;
+    dimFill: number;
+    hatch: number;
+    overlayOp: number | maplibregl.ExpressionSpecification;
+    shadowOp: number | maplibregl.ExpressionSpecification;
+    markOp: number | maplibregl.ExpressionSpecification;
+  };
+  let opacityPack: OpacityPack | null = null;
 
-  const applyPaint = () => {
+  const paintKey = () => `${filter}|${mode}|${highlightUids.join(",")}`;
+
+  const rebuildPaintStyle = () => {
+    const key = paintKey();
+    if (key === paintStyleKey && opacityPack) return;
+    paintStyleKey = key;
     const sp = pref(filter, "sp");
     const ci = pref(filter, "ci");
     const cu = pref(filter, "c");
     const n = pref(filter, "n");
     const w = pref(filter, "w");
-    const activityFill = interpolateActivity(cu, n, sparseThreshold(data, filter));
-    const countFill = interpolateCount(n, maxFeatureCount(data, filter));
+    const activityFill = interpolateActivity(cu, n, sparseThreshold(core.meta, filter));
+    const countFill = interpolateCount(n, maxFeatureCount(core.meta, filter));
     const scaleFill = mode === "features" ? countFill : activityFill;
     const choropleth = mode === "currentness" || mode === "features";
-    const empty = ["<=", ["to-number", ["get", n]], 0] as maplibregl.ExpressionSpecification;
-    const fillNormal: maplibregl.ExpressionSpecification =
-      mode === "users"
-        ? ([
-            "case",
-            empty,
-            "rgba(0,0,0,0)",
-            ["==", ["get", sp], 1],
-            PARCHMENT,
-            matchMeeple(ci),
-          ] as maplibregl.ExpressionSpecification)
-        : scaleFill;
+    const occupied = [">", ["to-number", ["get", n]], 0] as maplibregl.ExpressionSpecification;
+    const sparse = ["==", ["get", sp], 1] as maplibregl.ExpressionSpecification;
+    const notSparse = ["!=", ["get", sp], 1] as maplibregl.ExpressionSpecification;
     const highlighted = highlightUids.length > 0;
     const hit = highlighted ? inUidList(w, highlightUids) : (["boolean", true] as maplibregl.ExpressionSpecification);
-    const fill: maplibregl.ExpressionSpecification = !highlighted
-      ? fillNormal
-      : mode === "users"
-        ? ([
-            "case",
-            empty,
-            "rgba(0,0,0,0)",
-            ["==", ["get", sp], 1],
-            PARCHMENT,
-            hit,
-            matchMeeple(ci),
-            "#d1d5db",
-          ] as maplibregl.ExpressionSpecification)
-        : (["case", hit, scaleFill, "#d1d5db"] as maplibregl.ExpressionSpecification);
-    const opacity: number | maplibregl.ExpressionSpecification = !highlighted
-      ? (choropleth
-          ? 0.84
-          : (["case", empty, 0, ["==", ["get", sp], 1], 0.14, 0.72] as maplibregl.ExpressionSpecification))
-      : ([
-          "case",
-          empty,
-          0,
-          hit,
-          choropleth ? 0.9 : 0.84,
-          ["==", ["get", sp], 1],
-          0.05,
-          0.08,
-        ] as maplibregl.ExpressionSpecification);
+    const missed = ["!", hit] as maplibregl.ExpressionSpecification;
+    let fillColor: maplibregl.ExpressionSpecification | string = matchMeeple(ci);
+    let fillFilter: maplibregl.FilterSpecification = ["all", occupied, notSparse];
+    let sparseColor: maplibregl.ExpressionSpecification | string = PARCHMENT;
+    let sparseFilter: maplibregl.FilterSpecification = ["all", occupied, sparse];
+    let dimColor: maplibregl.ExpressionSpecification | string = DIM_GRAY;
+    let dimFilter: maplibregl.FilterSpecification = HIDDEN_FILTER;
+    let fillOpacity = 0.72;
+    let sparseFill = 0.14;
+    let dimFill = 0;
+    if (!highlighted) {
+      if (mode === "users") {
+        fillColor = matchMeeple(ci);
+        fillFilter = ["all", occupied, notSparse];
+        fillOpacity = 0.72;
+        sparseColor = PARCHMENT;
+        sparseFilter = ["all", occupied, sparse];
+        sparseFill = 0.14;
+      } else {
+        fillColor = scaleFill;
+        fillFilter = occupied;
+        fillOpacity = 0.84;
+        sparseFilter = HIDDEN_FILTER;
+        sparseFill = 0;
+      }
+    } else if (mode === "users") {
+      fillColor = ["case", sparse, PARCHMENT, matchMeeple(ci)] as maplibregl.ExpressionSpecification;
+      fillFilter = ["all", occupied, hit];
+      fillOpacity = 0.84;
+      sparseColor = PARCHMENT;
+      sparseFilter = ["all", occupied, sparse, missed];
+      sparseFill = 0.05;
+      dimColor = DIM_GRAY;
+      dimFilter = ["all", occupied, notSparse, missed];
+      dimFill = 0.08;
+    } else {
+      fillColor = scaleFill;
+      fillFilter = ["all", occupied, hit];
+      fillOpacity = 0.9;
+      sparseColor = DIM_GRAY;
+      sparseFilter = ["all", occupied, sparse, missed];
+      sparseFill = 0.05;
+      dimColor = DIM_GRAY;
+      dimFilter = ["all", occupied, notSparse, missed];
+      dimFill = 0.08;
+    }
+    const styleFill = (
+      id: string,
+      nextFilter: maplibregl.FilterSpecification,
+      color: maplibregl.ExpressionSpecification | string,
+    ) => {
+      if (!map.getLayer(id)) return;
+      map.setFilter(id, nextFilter);
+      map.setPaintProperty(id, "fill-color", color);
+    };
+    styleFill("h3-fill", fillFilter, fillColor);
+    styleFill("h3-fill-sparse", sparseFilter, sparseColor);
+    styleFill("h3-fill-dim", dimFilter, dimColor);
+    if (map.getLayer("h3-hatch")) {
+      map.setFilter("h3-hatch", ["all", sparse, occupied]);
+    }
+    opacityPack = {
+      fill: fillOpacity,
+      sparseFill,
+      dimFill,
+      hatch: choropleth || highlighted ? 0 : 0.35,
+      overlayOp: !highlighted
+        ? 0.62
+        : (["case", inUidList("uid", highlightUids), 0.92, 0.06] as maplibregl.ExpressionSpecification),
+      shadowOp: !highlighted
+        ? 0.14
+        : (["case", inUidList("uid", highlightUids), 0.2, 0.02] as maplibregl.ExpressionSpecification),
+      markOp: !highlighted
+        ? 1
+        : (["case", inUidList("uid", highlightUids), 1, 0.12] as maplibregl.ExpressionSpecification),
+    };
+  };
+
+  const applyOpacity = () => {
+    if (!opacityPack) rebuildPaintStyle();
+    const pack = opacityPack;
+    if (!pack) return;
+    const t = overlayAlpha;
     if (map.getLayer("h3-fill")) {
-      map.setPaintProperty("h3-fill", "fill-color", fill);
-      map.setPaintProperty("h3-fill", "fill-opacity", opacity);
+      map.setPaintProperty("h3-fill", "fill-opacity", pack.fill * t);
+    }
+    if (map.getLayer("h3-fill-sparse")) {
+      map.setPaintProperty("h3-fill-sparse", "fill-opacity", pack.sparseFill * t);
+    }
+    if (map.getLayer("h3-fill-dim")) {
+      map.setPaintProperty("h3-fill-dim", "fill-opacity", pack.dimFill * t);
     }
     if (map.getLayer("h3-hatch")) {
-      map.setFilter("h3-hatch", ["all", ["==", ["get", sp], 1], [">", ["to-number", ["get", n]], 0]]);
-      map.setPaintProperty("h3-hatch", "fill-opacity", choropleth || highlighted ? 0 : 0.35);
+      map.setPaintProperty("h3-hatch", "fill-opacity", scaleOpacity(pack.hatch, t));
     }
-    const overlayOp: maplibregl.ExpressionSpecification | number = !highlighted
-      ? 0.62
-      : (["case", inUidList("uid", highlightUids), 0.92, 0.06] as maplibregl.ExpressionSpecification);
-    if (map.getLayer("territories")) map.setPaintProperty("territories", "line-opacity", overlayOp);
-    if (map.getLayer("fronts")) map.setPaintProperty("fronts", "fill-opacity", overlayOp);
-    const shadowOp: maplibregl.ExpressionSpecification | number = !highlighted
-      ? 0.14
-      : (["case", inUidList("uid", highlightUids), 0.2, 0.02] as maplibregl.ExpressionSpecification);
-    if (map.getLayer("territories-shadow")) map.setPaintProperty("territories-shadow", "line-opacity", shadowOp);
-    const markOp: maplibregl.ExpressionSpecification | number = !highlighted
-      ? 1
-      : (["case", inUidList("uid", highlightUids), 1, 0.12] as maplibregl.ExpressionSpecification);
-    if (map.getLayer("capitals-dot")) map.setPaintProperty("capitals-dot", "circle-opacity", markOp);
-    if (map.getLayer("capitals-ring")) map.setPaintProperty("capitals-ring", "circle-stroke-opacity", markOp);
-    if (map.getLayer("flags")) map.setPaintProperty("flags", "icon-opacity", markOp);
-    if (map.getLayer("center-labels")) map.setPaintProperty("center-labels", "text-opacity", markOp);
-    if (map.getLayer("territory-labels")) map.setPaintProperty("territory-labels", "text-opacity", markOp);
+    if (map.getLayer("h3-grid")) {
+      map.setPaintProperty("h3-grid", "line-opacity", scaleOpacity(0.1, t));
+    }
+    if (map.getLayer("user-activity-fill")) {
+      map.setPaintProperty("user-activity-fill", "fill-opacity", scaleOpacity(ACTIVITY_FILL_OP, t));
+    }
+    if (map.getLayer("user-activity")) {
+      map.setPaintProperty("user-activity", "fill-opacity", scaleOpacity(ACTIVITY_PATTERN_OP, t));
+    }
+    if (map.getLayer("h3-line-sel")) {
+      map.setPaintProperty("h3-line-sel", "line-opacity", scaleOpacity(0.95, t));
+    }
+    if (map.getLayer("h3-line-sel-halo")) {
+      map.setPaintProperty("h3-line-sel-halo", "line-opacity", scaleOpacity(1, t));
+    }
+    if (map.getLayer("territories")) map.setPaintProperty("territories", "line-opacity", scaleOpacity(pack.overlayOp, t));
+    if (map.getLayer("fronts")) map.setPaintProperty("fronts", "fill-opacity", scaleOpacity(pack.overlayOp, t));
+    if (map.getLayer("territories-shadow")) {
+      map.setPaintProperty("territories-shadow", "line-opacity", scaleOpacity(pack.shadowOp, t));
+    }
+    if (map.getLayer("capitals-dot")) map.setPaintProperty("capitals-dot", "circle-opacity", scaleOpacity(pack.markOp, t));
+    if (map.getLayer("capitals-ring")) {
+      map.setPaintProperty("capitals-ring", "circle-stroke-opacity", scaleOpacity(pack.markOp, t));
+    }
+    if (map.getLayer("flags")) map.setPaintProperty("flags", "icon-opacity", scaleOpacity(pack.markOp, t));
+    if (map.getLayer("center-labels")) map.setPaintProperty("center-labels", "text-opacity", scaleOpacity(pack.markOp, t));
+    if (map.getLayer("territory-labels")) {
+      map.setPaintProperty("territory-labels", "text-opacity", scaleOpacity(pack.markOp, t));
+    }
+  };
+
+  const applyPaint = () => {
+    rebuildPaintStyle();
+    applyOpacity();
+  };
+
+  const resetPaintStyle = () => {
+    paintStyleKey = "";
+    opacityPack = null;
   };
 
   const markerCollection = () => {
-    const centers = data.centers?.[filter] ?? [];
+    const centers = core.centers?.[filter] ?? [];
     const capitalTotals = centers.filter((c) => c.own === 1).map((c) => c.total);
     const flagTotals = centers.filter((c) => c.own !== 1).map((c) => c.total);
-    const colors = winnerColorByUid(data, filter);
+    const colors = winnerColorByUid(core, filter);
     const features = centers.map((c) => {
       const name = users[String(c.uid)]?.name ?? `#${c.uid}`;
       const isCapital = c.own === 1;
@@ -397,26 +600,27 @@ export async function createMap(
     return { type: "FeatureCollection" as const, features };
   };
 
-  const overlayCache = new Map<FilterId, ReturnType<typeof buildTerritoryOverlays>>();
-  const overlayData = () => {
+  const EMPTY_OVERLAYS: OverlayBuild = {
+    outlines: { type: "FeatureCollection", features: [] },
+    labels: { type: "FeatureCollection", features: [] },
+    territoryUids: new Set(),
+  };
+
+  const overlayCache = new Map<FilterId, OverlayBuild>();
+  const overlayData = (): OverlayBuild => {
     let hit = overlayCache.get(filter);
     if (!hit) {
-      hit = buildTerritoryOverlays(data, filter, users);
+      const packed = packedOverlays?.[filter];
+      if (!packed?.length) return EMPTY_OVERLAYS;
+      hit = overlaysFromPacked(packed, users);
       overlayCache.set(filter, hit);
     }
     return hit;
   };
 
-  const frontSegCache = new Map<FilterId, ReturnType<typeof buildFrontSegments>>();
-  const frontSegments = () => {
-    if (!prevOwners) return [];
-    let hit = frontSegCache.get(filter);
-    if (!hit) {
-      hit = buildFrontSegments(data, users, prevOwners, filter);
-      frontSegCache.set(filter, hit);
-    }
-    return hit;
-  };
+  const frontSegments = (): FrontSegment[] => packedFronts?.[filter] ?? [];
+
+  const hasFronts = () => packedFronts != null && Object.keys(packedFronts).length > 0;
 
   let frontsBakedZoom = Number.NaN;
   const FRONT_ZOOM_EPS = 0.03;
@@ -427,7 +631,6 @@ export async function createMap(
     return frontTeethGeoJSON(segs, z);
   };
 
-  const emptyActivity = { type: "FeatureCollection" as const, features: [] as never[] };
 
   const refreshFronts = () => {
     const src = map.getSource("fronts") as maplibregl.GeoJSONSource | undefined;
@@ -438,7 +641,7 @@ export async function createMap(
 
   /** Size teeth for the current camera zoom before this frame paints. */
   const syncFrontsToCamera = () => {
-    if (!prevOwners || !map.isStyleLoaded() || !map.getSource("fronts")) return;
+    if (!hasFronts() || !map.isStyleLoaded() || !map.getSource("fronts")) return;
     const z = map.getZoom();
     if (Number.isFinite(frontsBakedZoom) && Math.abs(z - frontsBakedZoom) < FRONT_ZOOM_EPS) return;
     refreshFronts();
@@ -456,17 +659,17 @@ export async function createMap(
   const refreshActivity = () => {
     const src = map.getSource("user-activity") as maplibregl.GeoJSONSource | undefined;
     if (!src) return;
-    if (!highlightUids.length) {
-      src.setData(emptyActivity);
+    if (!highlightUids.length || !topUsers) {
+      src.setData(EMPTY_ACTIVITY);
       return;
     }
-    const colors = winnerColorByUid(data, filter);
+    const colors = winnerColorByUid(core, filter);
     for (const uid of highlightUids) {
       if (colors.has(uid)) continue;
       const name = users[String(uid)]?.name;
       if (name) colors.set(uid, colorIndexFromName(name));
     }
-    src.setData(userActivityCollection(data, filter, highlightUids, colors));
+    src.setData(userActivityCollection(topUsers, core.meta, filter, highlightUids, colors));
   };
 
   let lastDotCols = -1;
@@ -494,9 +697,61 @@ export async function createMap(
     });
   };
 
+  let frontRaf = 0;
   const onFrontZoom = () => {
-    if (!prevOwners) return;
-    syncFrontsToCamera();
+    if (!hasFronts()) return;
+    if (frontRaf) return;
+    frontRaf = requestAnimationFrame(() => {
+      frontRaf = 0;
+      syncFrontsToCamera();
+    });
+  };
+
+  const h3FillPaint = (
+    color: string | maplibregl.ExpressionSpecification,
+    opacity: number,
+  ): maplibregl.FillLayerSpecification["paint"] => ({
+    "fill-color": color,
+    "fill-opacity": opacity,
+    "fill-antialias": true,
+    "fill-outline-color": "rgba(0,0,0,0)",
+    "fill-color-transition": NO_FADE,
+    "fill-opacity-transition": NO_FADE,
+  });
+  const addH3FillLayers = (before?: string) => {
+    map.addLayer(
+      {
+        id: "h3-fill",
+        type: "fill",
+        source: "h3",
+        "source-layer": "h3",
+        filter: ["!=", ["get", "a_sp"], 1],
+        paint: h3FillPaint(matchMeeple("a_ci"), 0.72),
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "h3-fill-sparse",
+        type: "fill",
+        source: "h3",
+        "source-layer": "h3",
+        filter: ["==", ["get", "a_sp"], 1],
+        paint: h3FillPaint(PARCHMENT, 0.14),
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "h3-fill-dim",
+        type: "fill",
+        source: "h3",
+        "source-layer": "h3",
+        filter: HIDDEN_FILTER,
+        paint: h3FillPaint(DIM_GRAY, 0),
+      },
+      before,
+    );
   };
 
   map.on("load", () => {
@@ -514,25 +769,14 @@ export async function createMap(
       maxzoom: 14,
       promoteId: "h",
     });
-    map.addLayer({
-      id: "h3-fill",
-      type: "fill",
-      source: "h3",
-      "source-layer": "h3",
-      paint: {
-        "fill-color": PARCHMENT,
-        "fill-opacity": 0.72,
-        "fill-antialias": true,
-        "fill-outline-color": "rgba(0,0,0,0)",
-      },
-    });
+    addH3FillLayers();
     map.addLayer({
       id: "h3-hatch",
       type: "fill",
       source: "h3",
       "source-layer": "h3",
       filter: ["==", ["get", "a_sp"], 1],
-      paint: { "fill-pattern": "hatch", "fill-opacity": 0.35 },
+      paint: { "fill-pattern": "hatch", "fill-opacity": 0.35, "fill-opacity-transition": NO_FADE },
     });
     map.addLayer({
       id: "h3-grid",
@@ -547,24 +791,18 @@ export async function createMap(
         "line-color": "#1f2937",
         "line-width": 1.1,
         "line-opacity": 0.1,
+        "line-opacity-transition": NO_FADE,
       },
     });
-    map.addSource("user-activity", { type: "geojson", data: emptyActivity });
+    map.addSource("user-activity", { type: "geojson", data: EMPTY_ACTIVITY });
     map.addLayer({
       id: "user-activity-fill",
       type: "fill",
       source: "user-activity",
       paint: {
         "fill-color": matchMeeple("ci"),
-        "fill-opacity": [
-          "interpolate",
-          ["linear"],
-          ["to-number", ["get", "t"]],
-          0,
-          0.12,
-          1,
-          0.38,
-        ],
+        "fill-opacity": ACTIVITY_FILL_OP,
+        "fill-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -573,15 +811,8 @@ export async function createMap(
       source: "user-activity",
       paint: {
         "fill-pattern": activityPatternExpr(),
-        "fill-opacity": [
-          "interpolate",
-          ["linear"],
-          ["to-number", ["get", "t"]],
-          0,
-          0.4,
-          1,
-          1,
-        ],
+        "fill-opacity": ACTIVITY_PATTERN_OP,
+        "fill-opacity-transition": NO_FADE,
       },
     });
     const overlays = overlayData();
@@ -600,6 +831,7 @@ export async function createMap(
         "line-width": 4.2,
         "line-opacity": 0.14,
         "line-blur": 2.6,
+        "line-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -610,6 +842,7 @@ export async function createMap(
         "fill-color": "#2a1c12",
         "fill-opacity": 0.62,
         "fill-antialias": true,
+        "fill-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -624,6 +857,7 @@ export async function createMap(
         "line-color": "#2a1c12",
         "line-width": 1.35,
         "line-opacity": 0.62,
+        "line-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -632,7 +866,7 @@ export async function createMap(
       source: "h3",
       "source-layer": "h3",
       filter: ["==", ["get", "h"], ""],
-      paint: { "line-color": "#2563eb", "line-width": 4.2, "line-opacity": 0.95 },
+      paint: { "line-color": "#2563eb", "line-width": 4.2, "line-opacity": 0.95, "line-opacity-transition": NO_FADE },
     });
     map.addLayer({
       id: "h3-line-sel",
@@ -640,7 +874,7 @@ export async function createMap(
       source: "h3",
       "source-layer": "h3",
       filter: ["==", ["get", "h"], ""],
-      paint: { "line-color": "#ffffff", "line-width": 1.8, "line-opacity": 1 },
+      paint: { "line-color": "#ffffff", "line-width": 1.8, "line-opacity": 1, "line-opacity-transition": NO_FADE },
     });
     map.addSource("territory-labels", { type: "geojson", data: overlays.labels });
     map.addSource("markers", { type: "geojson", data: markerCollection() });
@@ -657,6 +891,7 @@ export async function createMap(
         "circle-stroke-color": "#111111",
         "circle-stroke-opacity": 1,
         "circle-pitch-alignment": "viewport",
+        "circle-stroke-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -669,6 +904,7 @@ export async function createMap(
         "circle-color": "#111111",
         "circle-opacity": 1,
         "circle-pitch-alignment": "viewport",
+        "circle-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -698,6 +934,10 @@ export async function createMap(
         "symbol-sort-key": ["get", "score"],
         "symbol-z-order": "auto",
       },
+      paint: {
+        "icon-opacity": 1,
+        "icon-opacity-transition": NO_FADE,
+      },
     });
     map.addLayer({
       id: "center-labels",
@@ -720,6 +960,7 @@ export async function createMap(
         "text-color": "#2a1c12",
         "text-halo-color": "#f4ead8",
         "text-halo-width": 1.4,
+        "text-opacity-transition": NO_FADE,
       },
     });
     map.addLayer({
@@ -756,9 +997,11 @@ export async function createMap(
         "text-halo-color": "#f4ead8",
         "text-halo-width": 1.6,
         "text-halo-blur": 0.4,
+        "text-opacity-transition": NO_FADE,
       },
     });
     applyPaint();
+    map.once("idle", () => applyPaint());
     const boxes = (camera?.fitBboxes?.filter((b) => b.length === 4) ?? []) as BBox4[];
     if (boxes.length) {
       map.fitBounds(unionBboxes(boxes as [number, number, number, number][]), {
@@ -778,50 +1021,46 @@ export async function createMap(
     if (map.getLayer("h3-line-sel-halo")) map.setFilter("h3-line-sel-halo", match);
   };
 
-  map.on("click", "h3-fill", (e) => {
-    const id = e.features?.[0]?.properties?.h as string | undefined;
-    if (!id) return;
-    if (id === selectedId) {
-      applySelection(null);
-      onCell(null);
-    } else {
-      applySelection(id);
-      onCell(id);
+  const pickH3 = (point?: maplibregl.PointLike): { h3: string; props: TileProps } | null => {
+    const layers = H3_PAINT_LAYERS.filter((id) => map.getLayer(id));
+    if (!layers.length) return null;
+    try {
+      const props = map.queryRenderedFeatures(point, { layers: [...layers] })[0]?.properties;
+      const id = props?.h;
+      return typeof id === "string" && id ? { h3: id, props: props as TileProps } : null;
+    } catch {
+      return null;
     }
-  });
+  };
+
   map.on("click", (e) => {
-    const hits = map.queryRenderedFeatures(e.point, { layers: ["h3-fill"] });
-    if (!hits.length) {
+    const hit = pickH3(e.point);
+    if (!hit || hit.h3 === selectedId) {
       applySelection(null);
-      onCell(null);
+      onCell(null, null);
+      return;
     }
-  });
-  map.on("mouseenter", "h3-fill", () => {
-    map.getCanvas().style.cursor = "pointer";
+    applySelection(hit.h3);
+    onCell(hit.h3, hit.props);
   });
   let hoverId: string | null = null;
-  map.on("mousemove", "h3-fill", (e) => {
-    const id = (e.features?.[0]?.properties?.h as string | undefined) ?? null;
-    if (id === hoverId) return;
-    hoverId = id;
-    onHover(id);
+  map.on("mousemove", (e) => {
+    const hit = pickH3(e.point);
+    map.getCanvas().style.cursor = hit ? "pointer" : "";
+    if ((hit?.h3 ?? null) === hoverId) return;
+    hoverId = hit?.h3 ?? null;
+    onHover(hoverId, hit?.props ?? null);
   });
-  map.on("mouseleave", "h3-fill", () => {
+  map.on("mouseleave", () => {
     map.getCanvas().style.cursor = "";
     if (hoverId == null) return;
     hoverId = null;
-    onHover(null);
+    onHover(null, null);
   });
   map.on("moveend", onMove);
   map.on("zoom", () => {
     onPatternZoom();
     onFrontZoom();
-  });
-  map.on("render", () => {
-    if (!prevOwners || !map.isStyleLoaded()) return;
-    const z = map.getZoom();
-    if (Number.isFinite(frontsBakedZoom) && Math.abs(z - frontsBakedZoom) < FRONT_ZOOM_EPS) return;
-    syncFrontsToCamera();
   });
   map.on("zoomend", () => {
     if (highlightUids.length) syncDotPatterns();
@@ -830,7 +1069,7 @@ export async function createMap(
 
   const replaceH3Source = (url: string) => {
     const selLayers = ["h3-line-sel", "h3-line-sel-halo"];
-    const baseLayers = ["h3-grid", "h3-hatch", "h3-fill"];
+    const baseLayers = ["h3-grid", "h3-hatch", "h3-fill-dim", "h3-fill-sparse", "h3-fill"];
     for (const id of [...selLayers, ...baseLayers]) {
       if (map.getLayer(id)) map.removeLayer(id);
     }
@@ -843,21 +1082,7 @@ export async function createMap(
       promoteId: "h",
     });
     const beforeActivity = map.getLayer("user-activity-fill") ? "user-activity-fill" : undefined;
-    map.addLayer(
-      {
-        id: "h3-fill",
-        type: "fill",
-        source: "h3",
-        "source-layer": "h3",
-        paint: {
-          "fill-color": PARCHMENT,
-          "fill-opacity": 0.72,
-          "fill-antialias": true,
-          "fill-outline-color": "rgba(0,0,0,0)",
-        },
-      },
-      beforeActivity,
-    );
+    addH3FillLayers(beforeActivity);
     map.addLayer(
       {
         id: "h3-hatch",
@@ -865,7 +1090,7 @@ export async function createMap(
         source: "h3",
         "source-layer": "h3",
         filter: ["==", ["get", "a_sp"], 1],
-        paint: { "fill-pattern": "hatch", "fill-opacity": 0.35 },
+        paint: { "fill-pattern": "hatch", "fill-opacity": 0.35, "fill-opacity-transition": NO_FADE },
       },
       beforeActivity,
     );
@@ -876,7 +1101,7 @@ export async function createMap(
         source: "h3",
         "source-layer": "h3-grid",
         layout: { "line-cap": "round", "line-join": "round" },
-        paint: { "line-color": "#1f2937", "line-width": 1.1, "line-opacity": 0.1 },
+        paint: { "line-color": "#1f2937", "line-width": 1.1, "line-opacity": 0.1, "line-opacity-transition": NO_FADE },
       },
       beforeActivity,
     );
@@ -888,7 +1113,7 @@ export async function createMap(
         source: "h3",
         "source-layer": "h3",
         filter: ["==", ["get", "h"], ""],
-        paint: { "line-color": "#2563eb", "line-width": 4.2, "line-opacity": 0.95 },
+        paint: { "line-color": "#2563eb", "line-width": 4.2, "line-opacity": 0.95, "line-opacity-transition": NO_FADE },
       },
       beforeSel,
     );
@@ -899,12 +1124,14 @@ export async function createMap(
         source: "h3",
         "source-layer": "h3",
         filter: ["==", ["get", "h"], ""],
-        paint: { "line-color": "#ffffff", "line-width": 1.8, "line-opacity": 1 },
+        paint: { "line-color": "#ffffff", "line-width": 1.8, "line-opacity": 1, "line-opacity-transition": NO_FADE },
       },
       beforeSel,
     );
     applySelection(selectedId);
+    resetPaintStyle();
     applyPaint();
+    map.once("idle", () => applyPaint());
   };
 
   return {
@@ -929,13 +1156,33 @@ export async function createMap(
       applySelection(id);
     },
     refreshMarkers: refreshOverlays,
-    setSnapshot: (next, nextUsers, url, previousOwners) => {
-      data = next;
+    setOverlayOpacity: (t) => {
+      overlayAlpha = Math.round(Math.max(0, Math.min(1, t)) * 100) / 100;
+      if (opacityRaf) return;
+      opacityRaf = requestAnimationFrame(() => {
+        opacityRaf = 0;
+        const t0 = performance.now();
+        applyOpacity();
+        if (opacityLogged < 3) {
+          console.debug(`[olg] opacity ${opacityLogged}: ${(performance.now() - t0).toFixed(1)}ms`);
+          opacityLogged += 1;
+        }
+      });
+    },
+    setTopUsers: (next) => {
+      topUsers = next;
+      if (map.isStyleLoaded()) refreshActivity();
+    },
+    setSnapshot: (next, nextUsers, url, nextOverlays, nextFronts) => {
+      core = next;
       users = nextUsers;
       pmtilesUrl = url;
-      prevOwners = previousOwners ?? null;
+      topUsers = null;
+      packedOverlays = nextOverlays ?? null;
+      packedFronts = nextFronts ?? null;
       overlayCache.clear();
-      frontSegCache.clear();
+      resetPaintStyle();
+      clearStatsCaches();
       if (map.getSource("h3")) replaceH3Source(url);
       if (map.isStyleLoaded()) {
         refreshOverlays();

@@ -48,19 +48,6 @@ export const FILTER_TIPS: Record<FilterId, string> = {
     "Öffentliche Ausstattung im Freien: Bänke, Mülleimer, Laternen, Hydranten, Infotafeln, Denkmäler, Parkplätze, Haltestellen, Automaten.",
 };
 
-/** Packed cell row: w, s, c, n, f (mean age days), k, sp, ci, u */
-export type PackedCell = [
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  Array<[number, number, number]>,
-];
-
 export interface ActivityCenter {
   uid: number;
   h3: string;
@@ -73,35 +60,32 @@ export interface ActivityCenter {
   own: number;
 }
 
-export const EMPTY_PACKED: PackedCell = Object.freeze([
-  0,
-  0,
-  0,
-  0,
-  0,
-  0,
-  1,
-  0,
-  Object.freeze([]) as unknown as Array<[number, number, number]>,
-]) as PackedCell;
+export interface SnapshotMeta {
+  generated: string;
+  h3_res: number;
+  filters: FilterId[];
+  sparse_count: number | Record<string, number>;
+  active_days: number;
+  bbox: [number, number, number, number];
+  bboxes?: [number, number, number, number][];
+  /** Highest per-user score in any cell, per filter (precomputed by the pipeline). */
+  max_score: Partial<Record<FilterId, number>>;
+  /** Highest object count in any cell, per filter. */
+  max_count: Partial<Record<FilterId, number>>;
+  label?: string;
+  season?: string;
+  id?: string;
+}
 
-export interface CellsFile {
-  meta: {
-    generated: string;
-    h3_res: number;
-    filters: FilterId[];
-    sparse_count: number | Record<string, number>;
-    active_days: number;
-    bbox: [number, number, number, number];
-    bboxes?: [number, number, number, number][];
-    cell_keys: string[];
-    cell_layout?: "filter-array" | "filter-object";
-    label?: string;
-    season?: string;
-    id?: string;
-  };
-  cells: Record<string, Record<FilterId, PackedCell>>;
-  centers?: Record<FilterId, ActivityCenter[]>;
+/**
+ * Everything the map needs up front. A few hundred KB: the per-cell numbers all
+ * live in the vector tiles, the per-cell top-user lists in cells.bin.gz.
+ */
+export interface SnapshotCore {
+  meta: SnapshotMeta;
+  centers: Partial<Record<FilterId, ActivityCenter[]>>;
+  /** Flat [uid, colorIndex, …] pairs per filter for every territory winner. */
+  colors: Partial<Record<FilterId, number[]>>;
 }
 
 export interface UserStat {
@@ -111,7 +95,8 @@ export interface UserStat {
   specialties: Record<Exclude<FilterId, "all">, number>;
 }
 
-export interface CellView {
+/** Per-cell numbers, read straight from the vector tile feature. */
+export interface CellStats {
   h3: string;
   winner: number;
   score: number;
@@ -120,40 +105,37 @@ export interface CellView {
   meanAgeDays: number;
   sparse: boolean;
   colorIndex: number;
-  top: Array<{ uid: number; score: number; lastTs: number }>;
 }
 
-/** Expand compact filter-array JSON (null empty rows) into in-memory filter records. */
-export function normalizeCellsFile(raw: unknown): CellsFile {
-  const payload = raw as {
-    meta: CellsFile["meta"];
-    cells: Record<string, unknown>;
-    centers?: CellsFile["centers"];
-  };
-  const filters = (payload.meta.filters?.length ? payload.meta.filters : FILTERS) as FilterId[];
-  if (payload.meta.cell_layout !== "filter-array") return payload as CellsFile;
-  const cells: CellsFile["cells"] = {};
-  for (const [h3, rows] of Object.entries(payload.cells)) {
-    const arr = rows as Array<PackedCell | null>;
-    const rec = {} as Record<FilterId, PackedCell>;
-    for (let i = 0; i < filters.length; i++) {
-      rec[filters[i]!] = arr[i] ?? EMPTY_PACKED;
-    }
-    cells[h3] = rec;
-  }
-  return { meta: payload.meta, cells, centers: payload.centers };
+export interface CellView extends CellStats {
+  /** null while cells.bin.gz is still loading. */
+  top: Array<{ uid: number; score: number; lastTs: number }> | null;
 }
 
-export function unpack(h3: string, packed: PackedCell): CellView {
+/** Raw feature properties of one hex, as encoded into the vector tiles. */
+export type TileProps = Record<string, unknown>;
+
+function num(props: Record<string, unknown>, key: string): number {
+  const value = props[key];
+  return typeof value === "number" ? value : Number(value) || 0;
+}
+
+/**
+ * Decode one hex from its tile properties. The pipeline stores the score times
+ * ten and the currentness times a hundred to keep the tiles integer-only.
+ */
+export function cellStatsFromTile(props: Record<string, unknown>, filter: FilterId): CellStats | null {
+  const h3 = props.h;
+  if (typeof h3 !== "string" || !h3) return null;
+  const p = FILTER_PREFIX[filter];
   return {
     h3,
-    winner: packed[0],
-    score: packed[1],
-    currentness: packed[2],
-    count: packed[3],
-    meanAgeDays: packed[4],
-    sparse: packed[6] === 1,
-    colorIndex: packed[7],
-    top: packed[8].map(([uid, score, lastTs]) => ({ uid, score, lastTs })),
+    winner: num(props, `${p}_w`),
+    score: num(props, `${p}_s`) / 10,
+    currentness: num(props, `${p}_c`) / 100,
+    count: num(props, `${p}_n`),
+    meanAgeDays: num(props, `${p}_f`),
+    sparse: num(props, `${p}_sp`) === 1,
+    colorIndex: num(props, `${p}_ci`),
   };
 }

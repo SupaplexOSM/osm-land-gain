@@ -2,7 +2,7 @@ import { FILTERS, type FilterId, type ViewMode } from "./types";
 
 export const MAP_MIN_ZOOM = 10;
 export const MAP_MAX_ZOOM = 16;
-export const MAP_DEFAULT_CENTER: [number, number] = [13.405, 52.52];
+export const MAP_DEFAULT_CENTER: [number, number] = [13.395, 52.517];
 export const MAP_DEFAULT_ZOOM = 11;
 
 export interface PermalinkState {

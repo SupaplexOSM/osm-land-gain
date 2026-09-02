@@ -111,51 +111,45 @@ def _sample_old_cells_payload() -> dict:
     }
 
 
-def test_compact_cells_payload_nulls_empty_rows() -> None:
-    from pipeline.config import FILTERS
-    from pipeline.export import compact_cells_payload, is_empty_packed_row
-
-    payload = _sample_old_cells_payload()
-    compact_cells_payload(payload)
-    assert payload["meta"]["cell_layout"] == "filter-array"
-    rows = payload["cells"]["891f1d48d27ffff"]
-    assert isinstance(rows, list)
-    assert len(rows) == len(FILTERS)
-    assert rows[0][0] == 42
-    assert rows[FILTERS.index("highway")] is None
-    assert is_empty_packed_row(None)
-    compact_cells_payload(payload)
-    assert payload["cells"]["891f1d48d27ffff"][0][0] == 42
-
-
-def test_records_from_cells_json_both_layouts() -> None:
+def test_migrate_legacy_snapshot() -> None:
+    """A gh-pages snapshot in the old one-big-cells.json layout converts in place."""
+    import gzip
     import json
     import tempfile
 
     from pipeline.config import FILTERS
-    from pipeline.export import compact_cells_payload, records_from_cells_json
-    from pipeline.territories import recolor_packed_cells
-    from pipeline.weights import user_color_index
+    from pipeline.export import migrate_legacy_snapshot, records_from_snapshot
 
+    cell = "891f1d48d27ffff"
     with tempfile.TemporaryDirectory() as raw:
-        tmp_path = Path(raw)
-        old_path = tmp_path / "old.json"
-        old_path.write_text(json.dumps(_sample_old_cells_payload()), encoding="utf-8")
-        old_rec = records_from_cells_json(old_path)
-        assert old_rec["891f1d48d27ffff"]["all"]["w"] == 42
-        assert old_rec["891f1d48d27ffff"]["highway"]["n"] == 0
+        snap = Path(raw)
+        payload = _sample_old_cells_payload()
+        payload["centers"] = {f: [] for f in FILTERS}
+        payload["meta"].update({"h3_res": 9, "cell_layout": "by-filter"})
+        (snap / "cells.json").write_text(json.dumps(payload), encoding="utf-8")
+        (snap / "users.json").write_text(
+            json.dumps({"42": {"name": "alice", "scores": {}, "last_ts": 0, "specialties": {}}}),
+            encoding="utf-8",
+        )
 
-        compact = compact_cells_payload(_sample_old_cells_payload())
-        names = [""] * 43
-        names[42] = "alice"
-        recolor_packed_cells(compact["cells"], 48, names)
-        new_path = tmp_path / "new.json"
-        new_path.write_text(json.dumps(compact), encoding="utf-8")
-        new_rec = records_from_cells_json(new_path)
-        assert new_rec["891f1d48d27ffff"]["all"]["w"] == 42
-        assert new_rec["891f1d48d27ffff"]["all"]["ci"] == user_color_index("alice", 48)
-        assert new_rec["891f1d48d27ffff"]["highway"]["sp"] == 1
-        assert set(new_rec["891f1d48d27ffff"]) == set(FILTERS)
+        assert migrate_legacy_snapshot(snap)
+        names = {p.name for p in snap.iterdir()}
+        assert {"cells.json", "cells.bin.gz", "scalars.bin.gz", "users.json.gz", "meta.json"} <= names
+        assert "users.json" not in names
+
+        core = json.loads((snap / "cells.json").read_text(encoding="utf-8"))
+        assert "cells" not in core
+        assert core["meta"]["max_count"]["all"] == 12
+        assert core["colors"]["all"] == [42, 7]
+        assert json.loads(gzip.decompress((snap / "users.json.gz").read_bytes()))["42"]["name"] == "alice"
+
+        back = records_from_snapshot(snap)
+        assert back[cell]["all"]["w"] == 42
+        assert back[cell]["all"]["u"][0][0] == 42
+        assert back[cell]["highway"]["sp"] == 1
+        assert set(back[cell]) == set(FILTERS)
+        # Running it again is a no-op: there is no legacy file left to convert.
+        assert not migrate_legacy_snapshot(snap)
 
 
 def test_cells_for_bboxes_union() -> None:
@@ -182,6 +176,12 @@ def test_season_labels() -> None:
     assert spring["short"] == "Frühling 2026"
     assert spring["label"] == "Datenstand: Frühling 2026"
     assert snapshot_entry(date(2026, 6, 21))["label"] == "Datenstand: Sommer 2026"
+    assert snapshot_entry(date(2026, 6, 21))["period"] == (
+        "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2026"
+    )
+    assert snapshot_entry(date(2026, 3, 21))["period"] == (
+        "OSM-Bearbeitungen im Zeitraum 21. Dezember 2025 bis 21. März 2026"
+    )
     assert snapshot_entry(date(2026, 9, 21))["label"] == "Datenstand: Herbst 2026"
     assert snapshot_entry(date(2026, 12, 21))["label"] == "Datenstand: Winter 2026"
     assert snapshot_entry(date(2025, 12, 21))["short"] == "Winter 2025"
@@ -212,6 +212,138 @@ def test_last_quarter_dates() -> None:
     assert dates[-1] == date(2026, 6, 21)
     assert len(dates) == 12
     assert dates == sorted(dates)
+
+
+def test_cell_binaries_roundtrip() -> None:
+    import tempfile
+
+    import h3
+
+    from pipeline.binpack import read_cell_records, write_cell_binaries
+    from pipeline.config import FILTERS
+
+    cell = h3.latlng_to_cell(52.52, 13.4, 9)
+    other = next(c for c in h3.grid_disk(cell, 1) if c != cell)
+    empty = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
+    filled = {
+        "w": 42,
+        "s": 1.5,
+        "c": 0.8,
+        "n": 12,
+        "f": 30,
+        "k": 0,
+        "sp": 0,
+        "ci": 7,
+        "u": [[42, 1.5, 1700006400], [7, 0.25, 1600041600]],
+    }
+    records = {
+        cell: {filt: dict(filled) if filt == "all" else dict(empty) for filt in FILTERS},
+        other: {filt: dict(empty) for filt in FILTERS},
+    }
+    user_stats = {42: {"name": "alice"}, 7: {"name": "bob"}}
+
+    with tempfile.TemporaryDirectory() as raw:
+        out = Path(raw)
+        write_cell_binaries(out, records, user_stats)
+        back = read_cell_records(out)
+
+    assert back is not None
+    assert set(back) == {cell, other}
+    row = back[cell]["all"]
+    assert row["w"] == 42
+    assert row["s"] == 1.5
+    assert row["c"] == 0.8
+    assert row["n"] == 12
+    assert row["ci"] == 7
+    assert row["sp"] == 0
+    assert [entry[0] for entry in row["u"]] == [42, 7]
+    assert [entry[1] for entry in row["u"]] == [1.5, 0.25]
+    # Timestamps are stored as whole days, so they land on midnight UTC.
+    assert [entry[2] for entry in row["u"]] == [1700006400 // 86400 * 86400, 1600041600 // 86400 * 86400]
+    assert back[cell]["highway"]["sp"] == 1
+    assert back[other]["all"]["u"] == []
+
+
+def test_filter_maxima_and_colors() -> None:
+    from pipeline.config import FILTERS
+    from pipeline.export import filter_maxima, winner_colors
+
+    empty = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
+    records = {
+        "a": {filt: dict(empty) for filt in FILTERS},
+        "b": {filt: dict(empty) for filt in FILTERS},
+    }
+    records["a"]["all"] = {**empty, "w": 5, "sp": 0, "ci": 3, "n": 40, "u": [[5, 9.5, 0], [6, 2.0, 0]]}
+    records["b"]["all"] = {**empty, "w": 6, "sp": 0, "ci": 4, "n": 12, "u": [[6, 4.0, 0]]}
+    # Sparse cells have no territory, so their winner must not enter the color table.
+    records["b"]["highway"] = {**empty, "w": 9, "sp": 1, "ci": 8, "n": 3, "u": [[9, 1.0, 0]]}
+
+    max_score, max_count = filter_maxima(records)
+    assert max_score["all"] == 9.5
+    assert max_count["all"] == 40
+    assert max_score["highway"] == 1.0
+    assert max_count["highway"] == 3
+
+    colors = winner_colors(records)
+    assert dict(zip(colors["all"][::2], colors["all"][1::2])) == {5: 3, 6: 4}
+    assert colors["highway"] == []
+
+
+def test_pack_overlays_connected() -> None:
+    import h3
+
+    from pipeline.config import FILTERS
+    from pipeline.overlays import pack_overlays
+
+    cell = h3.latlng_to_cell(52.52, 13.4, 9)
+    neighbor = next(c for c in h3.grid_disk(cell, 1) if c != cell)
+    empty = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
+
+    def occupied(uid: int, score: float) -> dict:
+        return {"w": uid, "s": score, "c": 1, "n": 5, "f": 0, "k": 0, "sp": 0, "ci": 1, "u": [[uid, score, 0]]}
+
+    records = {
+        cell: {filt: occupied(1, 2.0) if filt == "all" else dict(empty) for filt in FILTERS},
+        neighbor: {filt: occupied(1, 3.0) if filt == "all" else dict(empty) for filt in FILTERS},
+    }
+    packed = pack_overlays(records)
+    assert len(packed["all"]) == 1
+    item = packed["all"][0]
+    assert item["uid"] == 1
+    assert set(item["cells"]) == {cell, neighbor}
+    assert item["label"] in item["cells"]
+    assert item["score"] == 5.0
+    assert packed["highway"] == []
+
+
+def test_pack_fronts_new_land() -> None:
+    import h3
+
+    from pipeline.config import FILTERS
+    from pipeline.fronts import pack_fronts
+
+    cell = h3.latlng_to_cell(52.52, 13.4, 9)
+    neighbor = next(c for c in h3.grid_disk(cell, 1) if c != cell)
+    empty = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
+
+    def occupied(uid: int) -> dict:
+        return {"w": uid, "s": 1.0, "c": 1, "n": 5, "f": 0, "k": 0, "sp": 0, "ci": 1, "u": [[uid, 1.0, 0]]}
+
+    prev = {
+        cell: {filt: occupied(1) if filt == "all" else dict(empty) for filt in FILTERS},
+    }
+    cur = {
+        cell: {filt: occupied(1) if filt == "all" else dict(empty) for filt in FILTERS},
+        neighbor: {filt: occupied(1) if filt == "all" else dict(empty) for filt in FILTERS},
+    }
+    users = {1: {"name": "alice"}}
+    fronts = pack_fronts(cur, users, prev, users)
+    assert fronts["all"]
+    # Rows are [uid, depth, ax, ay, bx, by, sign]; the rest is derived client-side.
+    assert all(len(seg) == 7 for seg in fronts["all"])
+    assert all(seg[0] == 1 for seg in fronts["all"])
+    assert all(seg[1] in (1, 2, 3) for seg in fronts["all"])
+    assert all(seg[6] in (1, -1) for seg in fronts["all"])
 
 
 def test_prune_and_manifest() -> None:
@@ -274,12 +406,15 @@ if __name__ == "__main__":
     test_landscape_and_poi_filters()
     test_viewport_activity_level()
     test_unique_hex_edges()
-    test_compact_cells_payload_nulls_empty_rows()
-    test_records_from_cells_json_both_layouts()
+    test_migrate_legacy_snapshot()
     test_cells_for_bboxes_union()
     test_season_labels()
     test_snapshot_date_for_run()
     test_last_quarter_dates()
+    test_cell_binaries_roundtrip()
+    test_filter_maxima_and_colors()
+    test_pack_overlays_connected()
+    test_pack_fronts_new_land()
     test_prune_and_manifest()
     test_parse_dates()
     test_profile_bboxes()

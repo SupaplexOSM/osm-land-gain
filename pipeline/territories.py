@@ -259,20 +259,3 @@ def assemble_cell_records(
     return records, user_stats, centers_out
 
 
-def recolor_packed_cells(
-    cells: dict[str, dict],
-    palette_size: int,
-    names: list[str] | None = None,
-) -> None:
-    """Rewrite packed `ci` from the username hash (same color in every filter)."""
-    for packed in cells.values():
-        rows = packed if isinstance(packed, list) else [packed[filt] for filt in FILTERS]
-        for row in rows:
-            if row is None:
-                continue
-            uid = int(row[0])
-            sparse = int(row[6])
-            if uid and not sparse and names and 0 <= uid < len(names) and names[uid]:
-                row[7] = user_color_index(names[uid], palette_size)
-            else:
-                row[7] = 0

@@ -18,32 +18,162 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+    <!-- Critical: overlay must paint before JS injects style.css, otherwise the raw sidebar flashes. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #f4f5f7;
+      }
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: #f4f5f7;
+        z-index: 100;
+        color: #6b7280;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        font-size: 15px;
+      }
+      #loading.hide {
+        display: none;
+      }
+      #loading .loading-box {
+        width: min(18rem, calc(100% - 2.5rem));
+        text-align: center;
+      }
+      #loading .loading-title {
+        margin: 0 0 0.9rem;
+        font-size: 1rem;
+        font-weight: 500;
+        color: #6b7280;
+      }
+      #loading .loading-track {
+        height: 5px;
+        background: #e2e4e8;
+        overflow: hidden;
+      }
+      #loading-fill {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: #9aa0a8;
+      }
+      #loading .loading-status {
+        margin: 0.4rem 0 0;
+        font-size: 0.7rem;
+        color: #b4b8be;
+      }
+    </style>
   </head>
   <body>
+    <div id="loading">
+      <div class="loading-box">
+        <p class="loading-title" id="loading-title">Karte wird geladen…</p>
+        <div
+          class="loading-track"
+          id="loading-bar"
+          role="progressbar"
+          aria-labelledby="loading-title"
+          aria-describedby="loading-status"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <span id="loading-fill"></span>
+        </div>
+        <p id="loading-status" class="loading-status">Daten werden geladen…  0 %</p>
+      </div>
+    </div>
     <div id="app">
       <aside id="board">
         <header class="mast">
           <h1>OSM Landgewinn</h1>
-          <p class="tagline">Wer mappt wo am aktivsten in OpenStreetMap?</p>
-          <p class="lede">
-            Die Karte zeigt die aktivsten OpenStreetMap-User in einem Gebiet.
-            Neuere Bearbeitungen zählen stärker als ältere.
-            Aktivitäten werden mit benachbarten Gitterfeldern verrechnet, sodass eher zusammenhängende Gebiete statt einzelner Flecken entstehen.
-          </p>
+          <details class="lede-fold" open>
+            <summary class="tagline" title="Beschreibung ein- und ausklappen">Wer mappt wo am aktivsten in OpenStreetMap?</summary>
+            <div class="lede-body">
+              <p class="lede">
+                Die Karte zeigt die aktivsten OpenStreetMap-Mapper:innen in einem Gebiet.
+                Neuere Bearbeitungen zählen stärker als ältere.
+                Aktivitäten werden mit benachbarten Gitterfeldern verrechnet, sodass eher zusammenhängende Gebiete statt einzelner Flecken entstehen.
+              </p>
+              <ul class="lede-legend">
+                <li>
+                  <span class="lede-legend-sym">
+                    <svg class="lede-legend-flag" viewBox="0 0 48 60" width="16" height="20" aria-hidden="true" focusable="false">
+                      <path d="M10 4 L42 16 L10 28 Z" fill="#c2410c" stroke="#2a1c12" stroke-width="1.5" stroke-linejoin="round" />
+                      <line x1="10" y1="2" x2="10" y2="58" stroke="#2a1c12" stroke-width="3" />
+                    </svg>
+                  </span>
+                  <span>Aktivitätszentrum von Mapper:innen, die in dieser Gegend nicht die aktivsten Mapper:innen sind.</span>
+                </li>
+                <li>
+                  <span class="lede-legend-sym">
+                    <svg class="lede-legend-teeth" viewBox="0 0 12 40" width="12" height="40" aria-hidden="true" focusable="false">
+                      <path
+                        fill="currentColor"
+                        d="M1 0h1.6v40H1zM2.6 3l8 4-8 4V3zm0 8 8 4-8 4v-8zm0 8 8 4-8 4v-8zm0 8 8 4-8 4v-8z"
+                      />
+                    </svg>
+                  </span>
+                  <span>Haifisch-Zähne an den Gebietsgrenzen zeigen Verschiebungen zum vorherigen Quartal.</span>
+                </li>
+                <li class="lede-legend-method">
+                  <button
+                    type="button"
+                    class="lede-method-toggle"
+                    aria-expanded="false"
+                    aria-controls="lede-method-text"
+                    title="Hinweise zur Methodik ein- und ausklappen"
+                  >
+                    <span class="lede-legend-sym">
+                      <svg class="lede-legend-help" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.5" />
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          d="M6.15 6.2a1.9 1.9 0 1 1 2.55 1.8c-.55.32-.9.72-.9 1.45"
+                        />
+                        <circle cx="8" cy="11.65" r="0.85" fill="currentColor" />
+                      </svg>
+                    </span>
+                    <span class="lede-method-label">Hinweise zur Methodik</span>
+                  </button>
+                  <div id="lede-method-text" class="lede-method-body" hidden>
+                    <p>Pro Gitterfeld werden OSM-Mapping-Aktivitäten gezählt: für jede Änderung an einem Objekt erhält die Mapper:in eine gewisse Punktzahl, die sich aus dem Alter der Änderung ergibt.</p>
+                    <p>Liegt die Änderung in jüngerer Zeit (wenige Monate), gibt es 1 Punkt. Ältere Änderungen zählen weniger – zum Beispiel 0,5 Punkte nach zwei bis drei Jahren und fast 0 Punkte, wenn die Bearbeitung schon viele Jahre zurückliegt.</p>
+                    <p>Für die Gebietsdarstellung wird eine Glättung über zwei Nachbarfelder in alle Richtungen durchgeführt. Dadurch entstehen möglichst zusammenhängende Gebiete statt isolierter Flecken. So lässt sich erkennen, welche Mapper:innen in einem Gebiet am aktivsten sind.</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </details>
           <p id="generated" class="stand" hidden></p>
           <div id="snapshot-slider-wrap" class="snapshot-slider hide" hidden>
             <div class="snapshot-head">
               <label for="snapshot-slider" id="snapshot-label"></label>
               <span id="snapshot-count" class="snapshot-count"></span>
             </div>
-            <input id="snapshot-slider" type="range" min="0" max="0" step="1" value="0" aria-labelledby="snapshot-label" />
-            <div id="snapshot-ticks" class="snapshot-ticks"></div>
-            <p class="snapshot-hint">Zähne an den Gebietsgrenzen zeigen Verschiebungen zum vorherigen Datenstand.</p>
+            <div class="snapshot-range">
+              <input id="snapshot-slider" type="range" min="0" max="0" step="1" value="0" aria-labelledby="snapshot-label" />
+              <div id="snapshot-ticks" class="snapshot-ticks" aria-hidden="true"></div>
+            </div>
           </div>
         </header>
         <div class="controls">
-          <div id="regions" class="pills hide" hidden></div>
           <div id="modes" class="pills">
             <button type="button" data-mode="users">User</button>
             <button type="button" data-mode="currentness">Aktivität</button>
@@ -61,10 +191,10 @@
             <input
               id="user-search"
               type="search"
-              placeholder="User suchen…"
+              placeholder="Mapper:in suchen…"
               autocomplete="off"
               spellcheck="false"
-              aria-label="User suchen und auswählen"
+              aria-label="Mapper:in suchen und auswählen"
               aria-autocomplete="list"
               aria-controls="user-search-results"
             />
@@ -91,23 +221,11 @@
           Basemap: <a href="https://openfreemap.org">OpenFreeMap</a>.
         </footer>
       </aside>
-      <div id="map"></div>
-      <div id="loading">
-        <div class="loading-box">
-          <p class="loading-title" id="loading-title">Karte wird geladen…</p>
-          <div
-            class="loading-track"
-            id="loading-bar"
-            role="progressbar"
-            aria-labelledby="loading-title"
-            aria-describedby="loading-status"
-            aria-valuemin="0"
-            aria-valuemax="100"
-            aria-valuenow="0"
-          >
-            <span id="loading-fill"></span>
-          </div>
-          <p id="loading-status" class="loading-status">Daten werden geladen…  0 %</p>
+      <div class="map-pane">
+        <div id="map"></div>
+        <div class="opacity-control">
+          <label for="overlay-opacity">Deckkraft</label>
+          <input id="overlay-opacity" type="range" min="0" max="100" value="100" step="1" dir="ltr" />
         </div>
       </div>
     </div>

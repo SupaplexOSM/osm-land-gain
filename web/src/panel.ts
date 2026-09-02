@@ -4,6 +4,7 @@ import {
   activityLevel,
   cellActivity,
   formatAge,
+  formatCellAge,
   formatScore,
   RECENCY_LABEL,
   type RankedUser,
@@ -12,24 +13,27 @@ import {
 import type { ActivityCenter, CellView, FilterId, UserStat, ViewMode } from "./types";
 import { FILTER_LABELS, SPECIALTY_COLORS, SPECIALTY_LABELS } from "./types";
 
+/** Shown while cells.bin.gz is still in flight; the map itself is already usable. */
+const LOADING_USERS = "Mapper:innen werden geladen…";
+
 const TIP = {
   objects: "Anzahl der OSM-Features in diesem Gitterfeld für den gewählten Filter.",
   activity:
-    "Aktivität der User in diesem Gitterfeld: jüngere Bearbeitungen zählen stärker, schwach kartierte Felder werden heruntergewichtet.",
+    "Aktivität der Mapper:innen in diesem Gitterfeld: jüngere Bearbeitungen zählen stärker, schwach kartierte Felder werden heruntergewichtet.",
   scoreSmooth:
-    "Geglätteter Aktivitätswert dieses Users: zählt seine Edits in diesem Gitterfeld und den Nachbarfeldern. Neuere Bearbeitungen zählen stärker. Dieser Wert bestimmt, wer Gebietsleader ist.",
+    "Geglätteter Aktivitätswert der Mapper:in – zählt Edits in diesem Gitterfeld und den Nachbarfeldern. Neuere Bearbeitungen zählen stärker. Dieser Wert bestimmt, wer als aktivste Mapper:in in einem Gebiet gilt.",
   scoreCell:
-    "Tatsächlicher Aktivitätswert dieses Users nur in diesem Gitterfeld, ohne die Nachbarn. Neuere Bearbeitungen zählen stärker.",
+    "Tatsächlicher Aktivitätswert der Mapper:in nur in diesem Gitterfeld, ohne die Nachbarn. Neuere Bearbeitungen zählen stärker.",
   scoreView:
-    "Summe der tatsächlichen Aktivitätswerte dieses Users in den sichtbaren Gitterfeldern, ohne Glättung mit Nachbarn. Neuere Bearbeitungen zählen stärker.",
-  center: "Zelle mit dem höchsten geglätteten Punktwert dieses Users.",
-  fieldList: "User mit dem höchsten Aktivitäts-Score in diesem Gitterfeld, basierend darauf, wer ein OSM-Objekt zuletzt bearbeitet hat.",
-  leader: "User mit dem höchsten geglätteten Aktivitäts-Score in diesem Gitterfeld und der Umgebung (aktivster User in der Gegend).",
+    "Summe der Aktivitäten der Mapper:in in den sichtbaren Gitterfeldern, ohne Glättung mit Nachbarn. Neuere Bearbeitungen zählen stärker. Eine Kartenbearbeitung in jüngerer Zeit (letzte Monate) zählt 1 Punkt; ältere Bearbeitungen weniger (bis zu 0 Punkten bei Änderungen, die schon einige Jahre her sind).",
+  center: "Zelle mit dem höchsten geglätteten Punktwert der Mapper:in.",
+  fieldList: "Mapper:in mit dem höchsten Aktivitäts-Score in diesem Gitterfeld, basierend darauf, wer ein OSM-Objekt zuletzt bearbeitet hat.",
+  leader: "Mapper:in mit dem höchsten geglätteten Aktivitäts-Score in diesem Gitterfeld und der Umgebung (aktivste Mapper:in in der Gegend).",
   flags:
-    "Diese User haben in diesem Gitterfeld ein Aktivitätszentrum (Fähnchen auf der Karte), sind aber nicht die aktivsten User im Umkreis.",
-  viewList: "User mit dem höchsten Aktivitäts-Score im sichtbaren Kartenausschnitt, basierend darauf, wer ein OSM-Objekt zuletzt bearbeitet hat.",
+    "Diese Mapper:innen haben in diesem Gitterfeld ein Aktivitätszentrum (Fähnchen auf der Karte), sind aber nicht die aktivsten Mapper:innen im Umkreis.",
+  viewList: "Mapper:in mit dem höchsten Aktivitäts-Score im sichtbaren Kartenausschnitt, basierend darauf, wer ein OSM-Objekt zuletzt bearbeitet hat.",
   summary:
-    "Median der tatsächlichen User-Aktivität aller sichtbaren Gitterfelder (nicht geglättet). Schwach kartierte und leere Felder zählen mit — fehlende Features gelten als keine Aktivität, weil dort kartiert werden könnte. Die Stufen sind gegenüber dem einzelnen Gitterfeld gestaucht, damit Abweichungen vom Mittelfeld früher sichtbar werden.",
+    "Median der tatsächlichen Mapper:innen-Aktivität aller sichtbaren Gitterfelder (nicht geglättet). Schwach kartierte und leere Felder zählen mit — fehlende Features gelten als keine Aktivität, weil dort kartiert werden könnte. Die Stufen sind gegenüber dem einzelnen Gitterfeld gestaucht, damit Abweichungen vom Mittelfeld früher sichtbar werden.",
   osmExtent: "Denselben Kartenausschnitt auf openstreetmap.org öffnen.",
 };
 
@@ -101,9 +105,11 @@ function userRow(
   rank: number,
   selectedUids: Set<number>,
   scoreTip = TIP.scoreCell,
+  asOf?: number | null,
 ): string {
   const swatch = userColor(entry.colorIndex ?? colorIndexFromName(entry.name));
-  const age = entry.lastTs ? `<small>${formatAge(entry.lastTs)}</small>` : "";
+  const age =
+    asOf != null && entry.lastTs ? `<small>${formatCellAge(entry.lastTs, asOf)}</small>` : "";
   const name = entry.uid != null ? userLink(entry.uid, entry.name, selectedUids) : escapeHtml(entry.name);
   return `<li><b>${rank}.</b> <i style="background:${swatch}"></i> <span>${name}</span> <em class="tip" title="${escapeHtml(scoreTip)}">${formatScore(entry.score)}</em> ${age}</li>`;
 }
@@ -147,9 +153,10 @@ export function renderCellPanel(
   colorByUid?: Map<number, number>,
   selectedUids: Set<number> = new Set(),
   threshold = 20,
+  asOf: number | null = null,
 ): void {
   if (!view) {
-    el.innerHTML = `<p class="hint">Klicke ein Gitterfeld, um dort aktive User zu sehen.</p>`;
+    el.innerHTML = `<p class="hint">Klicke ein Gitterfeld, um dort aktive Mapper:innen zu sehen.</p>`;
     return;
   }
   const winner = view.winner ? users[String(view.winner)] : null;
@@ -173,18 +180,20 @@ export function renderCellPanel(
   const flagBlock = flagRows
     ? `<h3 class="quiet-head">${tip("Weitere Aktivitätszentren", TIP.flags)}</h3>${flagRows}`
     : "";
-  const top5 = view.top.slice(0, 5).map((row, i) => {
+  const top5 = (view.top ?? []).slice(0, 5).map((row, i) => {
     const u = users[String(row.uid)];
     return userRow(
       {
         uid: row.uid,
         name: u?.name ?? `#${row.uid}`,
         score: row.score,
-        lastTs: row.lastTs * 1000,
+        lastTs: row.lastTs,
         colorIndex: colorByUid?.get(row.uid) ?? (u ? colorIndexFromName(u.name) : view.colorIndex),
       },
       i + 1,
       selectedUids,
+      TIP.scoreCell,
+      asOf,
     );
   });
   const activity = activityPhrase(cellActivity(view, threshold));
@@ -199,7 +208,7 @@ export function renderCellPanel(
     : "";
   const kicker = `<p class="kicker">${FILTER_LABELS[filter]} · <span class="tip" title="${escapeHtml(TIP.objects)}">${view.count.toLocaleString("de-DE")} Features</span> · <span class="tip" title="${escapeHtml(TIP.activity)}">${activity}</span></p>`;
   el.innerHTML = `
-    <h3 class="cell-list-head quiet-head">${tip("Aktivster User in der Gegend", TIP.leader)}<button type="button" class="cell-clear" data-clear-cell="1" aria-label="Gitterfeld abwählen" title="Gitterfeld abwählen">×</button></h3>
+    <h3 class="cell-list-head quiet-head">${tip("Aktivste Mapper:in in der Gegend", TIP.leader)}<button type="button" class="cell-clear" data-clear-cell="1" aria-label="Gitterfeld abwählen" title="Gitterfeld abwählen">×</button></h3>
     <div class="leader">
       <h2>${title}</h2>
       ${leaderScore}
@@ -207,9 +216,9 @@ export function renderCellPanel(
     ${centerMark}
     ${sparseNote}
     ${flagBlock}
-    <h3>${tip("Aktivste User im Gitterfeld", TIP.fieldList)}</h3>
+    <h3>${tip("Aktivste Mapper:innen im Gitterfeld", TIP.fieldList)}</h3>
     ${kicker}
-    <ol class="rank">${top5.join("") || "<li>Keine Edits</li>"}</ol>
+    <ol class="rank">${top5.join("") || `<li${view.top ? "" : ' class="empty"'}>${view.top ? "Keine Edits" : LOADING_USERS}</li>`}</ol>
   `;
 }
 
@@ -238,7 +247,7 @@ export function renderHighlightChip(
       : "";
   el.innerHTML = `
     <div class="user-chip-head">
-      <p>Userauswahl</p>
+      <p>Auswahl</p>
       ${clearAll}
     </div>
     <div class="user-chip-list">${chips}</div>
@@ -247,35 +256,43 @@ export function renderHighlightChip(
 
 export function renderViewportPanel(
   el: HTMLElement,
-  ranked: RankedUser[],
+  ranked: RankedUser[] | null,
   summary: ViewportSummary,
-  colorByUid?: Map<number, number>,
+  _colorByUid?: Map<number, number>,
   selectedUids: Set<number> = new Set(),
   osmUrl = "https://www.openstreetmap.org/",
+  asOf: number | null = null,
 ): void {
-  const top = ranked.slice(0, 10);
-  const recentYear = ranked.filter((u) => u.recency <= 3).slice(0, 10);
-  const past = ranked.filter((u) => u.recency >= 4).slice(0, 10);
-  const list = (rows: RankedUser[]) =>
-    rows
+  const rows = ranked ?? [];
+  const top = rows.slice(0, 10);
+  const placeholder = (text: string) =>
+    ranked ? `<li class='empty'>${text}</li>` : `<li class='empty'>${LOADING_USERS}</li>`;
+  const recencyLine = (u: RankedUser): string => {
+    if (asOf == null) return "";
+    if (u.recency === 1) return `<p class="muted">${RECENCY_LABEL[1]}</p>`;
+    return `<p class="muted">${RECENCY_LABEL[u.recency]} (${formatAge(u.lastTs, asOf)})</p>`;
+  };
+  const list = (items: RankedUser[]) =>
+    items
       .map((u, i) => {
-        const age = formatAge(u.lastTs);
         return `<li>
           <header><b>${i + 1}.</b> <span>${userLink(u.uid, u.name, selectedUids)}</span> <em class="tip" title="${escapeHtml(TIP.scoreView)}">${formatScore(u.score)}</em></header>
-          <p class="muted">${RECENCY_LABEL[u.recency]} (${age})</p>
+          ${recencyLine(u)}
           ${specialtyStack(u.specialties)}
         </li>`;
       })
-      .join("") || "<li class='empty'>Keine User im Ausschnitt</li>";
+      .join("") || placeholder("Keine Mapper:innen im Ausschnitt");
 
   const activity = ACTIVITY_LEVEL_LABEL[summary.level];
+  const mappers =
+    summary.mappers == null
+      ? "Mapper:innen werden gezählt…"
+      : summary.mappers === 1
+        ? "1 Mapper:in"
+        : `${summary.mappers.toLocaleString("de-DE")} Mapper:innen`;
   el.innerHTML = `
-    <p class="summary" title="${escapeHtml(TIP.summary)}">${summary.mappers} User · ${summary.objects.toLocaleString("de-DE")} Features · <span class="tip" title="${escapeHtml(TIP.activity)}">${activity}</span></p>
-    <h3 class="viewport-list-head">${tip("Aktivste User im Kartenausschnitt", TIP.viewList)}<a class="osm-ext osm-extent" href="${escapeHtml(osmUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(TIP.osmExtent)}" aria-label="${escapeHtml(TIP.osmExtent)}"><img class="osm-logo" src="./osm-logo.svg" width="22" height="22" alt=""></a></h3>
+    <p class="summary" title="${escapeHtml(TIP.summary)}">${mappers} · ${summary.objects.toLocaleString("de-DE")} Features · <span class="tip" title="${escapeHtml(TIP.activity)}">${activity}</span></p>
+    <h3 class="viewport-list-head">${tip("Aktivste Mapper:innen im Kartenausschnitt", TIP.viewList)}<a class="osm-ext osm-extent" href="${escapeHtml(osmUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(TIP.osmExtent)}" aria-label="${escapeHtml(TIP.osmExtent)}"><img class="osm-logo" src="./osm-logo.svg" width="22" height="22" alt=""></a></h3>
     <ol class="rank fat">${list(top)}</ol>
-    <h3>Im letzten Jahr aktiv</h3>
-    <ol class="rank">${recentYear.map((u, i) => userRow({ uid: u.uid, name: u.name, score: u.score, lastTs: u.lastTs, colorIndex: colorByUid?.get(u.uid) }, i + 1, selectedUids, TIP.scoreView)).join("") || "<li>Niemand im letzten Jahr</li>"}</ol>
-    <h3>In der Vergangenheit aktiv</h3>
-    <ol class="rank">${past.map((u, i) => userRow({ uid: u.uid, name: u.name, score: u.score, lastTs: u.lastTs, colorIndex: colorByUid?.get(u.uid) }, i + 1, selectedUids, TIP.scoreView)).join("") || "<li>Keine älteren Schwerpunkte</li>"}</ol>
   `;
 }

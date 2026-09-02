@@ -1,4 +1,10 @@
-"""Write cells.json, users.json and a PMTiles archive of H3 polygons."""
+"""Write the snapshot payloads: core JSON, binaries and a PMTiles archive.
+
+Per snapshot the web app fetches ``cells.json`` (metadata, activity centers and
+precomputed lookups, a few hundred KB), the PMTiles for everything it draws, the
+overlay/front sidecars, and — only once the map is already interactive —
+``cells.bin.gz`` with the per-cell top-user lists.
+"""
 
 from __future__ import annotations
 
@@ -15,11 +21,29 @@ from mapbox_vector_tile import encode as mvt_encode
 from pmtiles.tile import Compression, TileType, zxy_to_tileid
 from pmtiles.writer import Writer
 
+from .binpack import read_cell_records, write_cell_binaries
 from .config import FILTER_PREFIX, FILTERS, Config
 from .territories import FilterCell
 
 EMPTY_ROW = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
 PACKED_KEYS = ("w", "s", "c", "n", "f", "k", "sp", "ci", "u")
+
+
+def write_json_gz(path: Path, payload: object) -> None:
+    """Write compact JSON pre-compressed, so no server has to gzip on the fly."""
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    path.write_bytes(gzip.compress(raw, 6))
+
+
+def read_json_maybe_gz(path: Path) -> object | None:
+    """Read ``x.json.gz`` if present, else ``x.json``; None when neither exists."""
+    gz = path if path.suffix == ".gz" else path.with_suffix(path.suffix + ".gz")
+    plain = Path(str(gz)[: -len(".gz")]) if gz != path else path
+    if gz.exists():
+        return json.loads(gzip.decompress(gz.read_bytes()).decode("utf-8"))
+    if plain.exists():
+        return json.loads(plain.read_text(encoding="utf-8"))
+    return None
 
 
 def cell_polygon(cell: str) -> list[list[float]]:
@@ -34,54 +58,49 @@ def cell_center(cell: str) -> tuple[float, float]:
     return lng, lat
 
 
-def packed_row_from_record(rec: dict) -> list:
-    return [
-        rec["w"],
-        rec["s"],
-        rec["c"],
-        rec["n"],
-        rec["f"],
-        rec["k"],
-        rec["sp"],
-        rec["ci"],
-        rec["u"],
-    ]
+def filter_maxima(records: dict[str, FilterCell]) -> tuple[dict[str, float], dict[str, int]]:
+    """Highest per-user score and object count per filter.
+
+    The web app used to scan every cell for these on each filter switch.
+    """
+    max_score = {filt: 0.0 for filt in FILTERS}
+    max_count = {filt: 0 for filt in FILTERS}
+    for by_filter in records.values():
+        for filt in FILTERS:
+            row = by_filter.get(filt)
+            if not row:
+                continue
+            count = int(row.get("n") or 0)
+            if count > max_count[filt]:
+                max_count[filt] = count
+            for entry in row.get("u") or []:
+                if entry and float(entry[1]) > max_score[filt]:
+                    max_score[filt] = float(entry[1])
+    return (
+        {filt: round(value, 3) for filt, value in max_score.items()},
+        max_count,
+    )
 
 
-def is_empty_packed_row(row: list | None) -> bool:
-    """True when n=0, no winner, and no per-user scores."""
-    if row is None:
-        return True
-    return (not row[0]) and (not row[3]) and (not row[8])
-
-
-def compact_filter_array(by_filter: dict) -> list:
-    rows = []
+def winner_colors(records: dict[str, FilterCell]) -> dict[str, list[int]]:
+    """Flat [uid, colorIndex, …] pairs per filter for every territory winner."""
+    out: dict[str, list[int]] = {}
     for filt in FILTERS:
-        rec = by_filter[filt]
-        packed = packed_row_from_record(rec) if isinstance(rec, dict) and "w" in rec else rec
-        rows.append(None if is_empty_packed_row(packed) else packed)
-    return rows
-
-
-def compact_cells_payload(payload: dict) -> dict:
-    """Rewrite `cells` as filter-order arrays with null empty rows (in place)."""
-    meta = payload.setdefault("meta", {})
-    filters = list(meta.get("filters") or FILTERS)
-    new_cells = {}
-    for cell, packed in payload["cells"].items():
-        if isinstance(packed, list):
-            new_cells[cell] = [None if is_empty_packed_row(row) else row for row in packed]
-        else:
-            rows = []
-            for filt in filters:
-                row = packed.get(filt) if isinstance(packed, dict) else None
-                rows.append(None if is_empty_packed_row(row) else row)
-            new_cells[cell] = rows
-    payload["cells"] = new_cells
-    meta["cell_layout"] = "filter-array"
-    meta["filters"] = filters
-    return payload
+        seen: dict[int, int] = {}
+        for by_filter in records.values():
+            row = by_filter.get(filt)
+            if not row:
+                continue
+            uid = int(row.get("w") or 0)
+            if not uid or int(row.get("sp") or 0) == 1 or uid in seen:
+                continue
+            seen[uid] = int(row.get("ci") or 0)
+        flat: list[int] = []
+        for uid, ci in seen.items():
+            flat.append(uid)
+            flat.append(ci)
+        out[filt] = flat
+    return out
 
 
 def write_json_sidecars(
@@ -93,9 +112,8 @@ def write_json_sidecars(
     centers: dict[str, list[dict]] | None = None,
     snapshot: dict | None = None,
 ) -> None:
-    cells_out = {cell: compact_filter_array(by_filter) for cell, by_filter in records.items()}
-
     users_out = {str(uid): st for uid, st in user_stats.items()}
+    max_score, max_count = filter_maxima(records)
     meta = {
         "generated": generated.isoformat(),
         "h3_res": cfg.h3_res,
@@ -104,8 +122,8 @@ def write_json_sidecars(
         "active_days": 90,
         "bbox": list(cfg.bbox),
         "bboxes": [list(b) for b in cfg.bboxes],
-        "cell_keys": ["w", "s", "c", "n", "f", "k", "sp", "ci", "u"],
-        "cell_layout": "filter-array",
+        "max_score": max_score,
+        "max_count": max_count,
     }
     if snapshot:
         meta.update(snapshot)
@@ -113,18 +131,17 @@ def write_json_sidecars(
         json.dumps(
             {
                 "meta": meta,
-                "cells": cells_out,
                 "centers": centers or {f: [] for f in FILTERS},
+                "colors": winner_colors(records),
             },
             separators=(",", ":"),
         ),
         encoding="utf-8",
     )
-    (out_dir / "users.json").write_text(
-        json.dumps(users_out, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    write_json_gz(out_dir / "users.json.gz", users_out)
+    (out_dir / "users.json").unlink(missing_ok=True)
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    write_cell_binaries(out_dir, records, user_stats)
 
 
 MERCATOR_MAX = 20037508.342789244
@@ -161,6 +178,68 @@ def records_from_cells_json(path: Path) -> dict[str, FilterCell]:
                 filt: dict(zip(PACKED_KEYS, packed[filt], strict=True)) for filt in FILTERS
             }
     return records
+
+
+def legacy_cells_json(snap_dir: Path) -> Path | None:
+    """Path of a pre-binary cells.json (one that still carries a `cells` block)."""
+    path = snap_dir / "cells.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return path if isinstance(payload, dict) and payload.get("cells") else None
+
+
+def user_stats_from_snapshot(snap_dir: Path) -> dict | None:
+    return read_json_maybe_gz(snap_dir / "users.json")  # type: ignore[return-value]
+
+
+def records_from_snapshot(snap_dir: Path) -> dict[str, FilterCell] | None:
+    """Full per-cell records from the binaries, falling back to a legacy cells.json."""
+    records = read_cell_records(snap_dir)
+    if records is not None:
+        return records
+    legacy = legacy_cells_json(snap_dir)
+    return records_from_cells_json(legacy) if legacy else None
+
+
+def migrate_legacy_snapshot(snap_dir: Path) -> bool:
+    """Rewrite a pre-binary snapshot folder in place; False if nothing to do.
+
+    Snapshots restored from the gh-pages archive still carry the old monolithic
+    cells.json. Converting them here keeps older quarters usable without a PBF.
+    """
+    legacy = legacy_cells_json(snap_dir)
+    if legacy is None:
+        return False
+    payload = json.loads(legacy.read_text(encoding="utf-8"))
+    records = records_from_cells_json(legacy)
+    user_stats = user_stats_from_snapshot(snap_dir)
+    if not isinstance(user_stats, dict):
+        return False
+
+    meta = dict(payload.get("meta") or {})
+    for stale in ("cell_keys", "cell_layout"):
+        meta.pop(stale, None)
+    max_score, max_count = filter_maxima(records)
+    meta["max_score"] = max_score
+    meta["max_count"] = max_count
+    centers = payload.get("centers") or {f: [] for f in FILTERS}
+
+    (snap_dir / "cells.json").write_text(
+        json.dumps(
+            {"meta": meta, "centers": centers, "colors": winner_colors(records)},
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    write_json_gz(snap_dir / "users.json.gz", user_stats)
+    (snap_dir / "users.json").unlink(missing_ok=True)
+    (snap_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    write_cell_binaries(snap_dir, records, {int(uid): st for uid, st in user_stats.items()})
+    return True
 
 
 def _tile_props(rec: FilterCell) -> dict:

@@ -24,6 +24,21 @@ SEASON_LABEL_DE = {
     "herbst": "Herbst",
     "winter": "Winter",
 }
+MONTH_LABEL_DE = (
+    "",
+    "Januar",
+    "Februar",
+    "März",
+    "April",
+    "Mai",
+    "Juni",
+    "Juli",
+    "August",
+    "September",
+    "Oktober",
+    "November",
+    "Dezember",
+)
 
 
 def parse_dates(raw: str) -> list[date]:
@@ -77,6 +92,31 @@ def last_quarter_dates(n: int = MAX_SNAPSHOTS, today: date | None = None) -> lis
     return list(reversed(out))
 
 
+def previous_quarter_date(day: date) -> date:
+    """Stichtag des vorherigen Quartals (21. des Monats, drei Monate früher)."""
+    month = day.month - 3
+    year = day.year
+    if month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, SNAPSHOT_DAY)
+
+
+def _format_period_day(day: date, with_year: bool) -> str:
+    text = f"{day.day}. {MONTH_LABEL_DE[day.month]}"
+    return f"{text} {day.year}" if with_year else text
+
+
+def snapshot_period_hint(day: date) -> str:
+    """Tooltip: OSM-Edits vom vorherigen Quartalsstichtag bis zu diesem Datenstand."""
+    start = previous_quarter_date(day)
+    years_differ = start.year != day.year
+    return (
+        "OSM-Bearbeitungen im Zeitraum "
+        f"{_format_period_day(start, years_differ)} bis {_format_period_day(day, True)}"
+    )
+
+
 def snapshot_entry(day: date) -> dict[str, str]:
     season = SEASON_BY_MONTH.get(day.month, "") if day.day == SNAPSHOT_DAY else ""
     if season:
@@ -91,6 +131,7 @@ def snapshot_entry(day: date) -> dict[str, str]:
         "season": season,
         "short": short,
         "label": label,
+        "period": snapshot_period_hint(day),
     }
 
 
@@ -118,7 +159,10 @@ def prune_snapshots(data_dir: Path, keep: int = MAX_SNAPSHOTS) -> list[Path]:
 
 def write_snapshots_manifest(data_dir: Path, keep: int = MAX_SNAPSHOTS) -> dict:
     dirs = prune_snapshots(data_dir, keep)
-    payload = {"snapshots": [snapshot_entry(date.fromisoformat(path.name)) for path in dirs]}
+    snapshots = []
+    for path in dirs:
+        snapshots.append(snapshot_entry(date.fromisoformat(path.name)))
+    payload = {"snapshots": snapshots}
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "snapshots.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

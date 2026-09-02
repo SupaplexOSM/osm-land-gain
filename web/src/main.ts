@@ -1,7 +1,8 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { CURRENTNESS_CSS, FEATURE_CSS } from "./colors";
-import { extractSnapshotOwners, type SnapshotOwners } from "./fronts";
-import { createMap, type MapHandles } from "./map";
+import { parsePackedFronts, type PackedFronts } from "./fronts";
+import { fetchJson, fetchJsonOptional, isAbortError } from "./gz";
+import { createMap, warmTiles, type MapHandles } from "./map";
 import { osmExtentUrl, renderCellPanel, renderHighlightChip, renderViewportPanel } from "./panel";
 import {
   MAP_DEFAULT_CENTER,
@@ -11,6 +12,7 @@ import {
 } from "./permalink";
 import {
   cellActivity,
+  cellStatsFor,
   cellView,
   cellsInBounds,
   featureLegendMarks,
@@ -19,21 +21,15 @@ import {
   sparseThreshold,
   viewportRanking,
   viewportSummary,
-  visibleCellIds,
+  visibleCellStats,
   winnerColorByUid,
 } from "./stats";
-import type { CellsFile, FilterId, UserStat, ViewMode } from "./types";
-import { FILTERS, FILTER_TIPS, normalizeCellsFile } from "./types";
-import {
-  clusterBboxes,
-  initialFitBboxes,
-  regionLabel,
-  unionBboxes,
-  type BBox4,
-} from "./regions";
+import { parsePackedOverlays, type PackedOverlays } from "./territories";
+import type { TopUsers } from "./topusers";
+import { loadTopUsers, type TopUsersHandle } from "./topusersclient";
+import type { CellStats, FilterId, SnapshotCore, TileProps, UserStat, ViewMode } from "./types";
+import { cellStatsFromTile, FILTERS, FILTER_TIPS } from "./types";
 import "./style.css";
-
-type ByteSlot = { loaded: number; total: number };
 
 interface Snapshot {
   id: string;
@@ -41,71 +37,102 @@ interface Snapshot {
   season: string;
   label: string;
   short?: string;
+  period?: string;
 }
 
-const SEASON_DE: Record<string, string> = {
-  fruehling: "Frühling",
-  sommer: "Sommer",
-  herbst: "Herbst",
-  winter: "Winter",
+/**
+ * Everything needed before the map can be shown. The per-cell top-user lists are
+ * deliberately not in here; they stream in afterwards and only fill the panels.
+ */
+type CachedSnapshot = {
+  core: SnapshotCore;
+  users: Record<string, UserStat>;
+  overlays: PackedOverlays | null;
+  fronts: PackedFronts | null;
+  topUsers: TopUsers | null;
 };
 
-function snapshotShort(s: Snapshot): string {
-  if (s.short) return s.short;
-  const season = SEASON_DE[s.season];
-  if (season && s.date) return `${season} ${s.date.slice(0, 4)}`;
-  return s.date;
+const SNAPSHOT_CACHE_MAX = 4;
+
+const MONTH_DE = [
+  "",
+  "Januar",
+  "Februar",
+  "März",
+  "April",
+  "Mai",
+  "Juni",
+  "Juli",
+  "August",
+  "September",
+  "Oktober",
+  "November",
+  "Dezember",
+];
+
+function previousQuarterDate(iso: string): Date {
+  const [yearRaw, monthRaw] = iso.split("-").map(Number);
+  let month = (monthRaw || 1) - 3;
+  let year = yearRaw || 1970;
+  if (month <= 0) {
+    month += 12;
+    year -= 1;
+  }
+  return new Date(Date.UTC(year, month - 1, 21));
+}
+
+function formatPeriodDay(d: Date, withYear: boolean): string {
+  const text = `${d.getUTCDate()}. ${MONTH_DE[d.getUTCMonth() + 1]}`;
+  return withYear ? `${text} ${d.getUTCFullYear()}` : text;
+}
+
+function snapshotPeriodHint(s: Snapshot): string {
+  const end = new Date(`${s.date}T00:00:00Z`);
+  if (Number.isNaN(end.getTime())) return s.period ?? "";
+  const start = previousQuarterDate(s.date);
+  const startYear = start.getUTCFullYear() !== end.getUTCFullYear();
+  return `OSM-Bearbeitungen im Zeitraum ${formatPeriodDay(start, startYear)} bis ${formatPeriodDay(end, true)}`;
+}
+
+function isSpringSnapshot(s: Snapshot): boolean {
+  return s.season === "fruehling" || /^\d{4}-03-21$/.test(s.date);
 }
 
 function snapshotCountLabel(n: number): string {
   return n === 1 ? "1 Datenstand" : `${n} Datenstände`;
 }
 
-function snapshotUrls(id: string): { cells: string; users: string; pmtiles: string } {
+function snapshotMillis(id: string): number {
+  const t = Date.parse(`${id}T23:59:59Z`);
+  return Number.isFinite(t) ? t : Date.now();
+}
+
+function snapshotUrls(id: string): {
+  core: string;
+  users: string;
+  pmtiles: string;
+  overlays: string;
+  fronts: string;
+  topUsers: string;
+} {
   const base = `./data/${id}`;
+  const abs = (name: string) => new URL(`${base}/${name}`, document.baseURI).href;
   return {
-    cells: `${base}/cells.json`,
-    users: `${base}/users.json`,
-    pmtiles: new URL(`${base}/cells.pmtiles`, document.baseURI).href,
+    core: `${base}/cells.json`,
+    users: `${base}/users.json.gz`,
+    // The worker and the PMTiles protocol resolve relative paths against their
+    // own script, so hand them absolute URLs.
+    pmtiles: abs("cells.pmtiles"),
+    overlays: `${base}/overlays.json.gz`,
+    fronts: `${base}/fronts.json.gz`,
+    topUsers: abs("cells.bin.gz"),
   };
 }
 
-function previousSnapshotId(snapshots: Snapshot[], id: string): string | null {
+function neighbourSnapshotIds(snapshots: Snapshot[], id: string): string[] {
   const i = snapshots.findIndex((s) => s.id === id);
-  return i > 0 ? snapshots[i - 1]!.id : null;
-}
-
-async function fetchBuffer(url: string, onProgress: (loaded: number, total: number) => void): Promise<ArrayBuffer> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} (${res.status})`);
-  const total = Number(res.headers.get("content-length")) || 0;
-  if (!res.body) {
-    const buf = await res.arrayBuffer();
-    onProgress(buf.byteLength, buf.byteLength);
-    return buf;
-  }
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.byteLength;
-    onProgress(loaded, total);
-  }
-  const out = new Uint8Array(loaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  onProgress(loaded, loaded);
-  return out.buffer;
-}
-
-function parseJsonBuffer<T>(buf: ArrayBuffer): T {
-  return JSON.parse(new TextDecoder().decode(buf)) as T;
+  if (i < 0) return [];
+  return [snapshots[i + 1]?.id, snapshots[i - 1]?.id].filter((s): s is string => Boolean(s));
 }
 
 function $(id: string): HTMLElement {
@@ -131,66 +158,125 @@ async function main(): Promise<void> {
   let mode: ViewMode = "users";
   let selected: string | null = null;
   let hovered: string | null = null;
+  // Tile properties of the clicked and hovered hex, kept so switching filters or
+  // panning does not have to search the loaded tiles again.
+  let selectedProps: TileProps | null = null;
+  let hoveredProps: TileProps | null = null;
   const highlightedUids = new Set<number>();
   let handles: MapHandles | undefined;
-  let data: CellsFile;
+  let core: SnapshotCore;
   let users: Record<string, UserStat>;
   let snapshots: Snapshot[] = [];
   let snapshotId = "";
-  const ownerCache = new Map<string, SnapshotOwners>();
-  let previousOwners: SnapshotOwners | null = null;
+  const snapshotCache = new Map<string, CachedSnapshot>();
+  let packedOverlays: PackedOverlays | null = null;
+  let packedFronts: PackedFronts | null = null;
+  let topUsers: TopUsers | null = null;
+  let topUsersJob: TopUsersHandle | null = null;
+
+  const takeCachedSnapshot = (id: string): CachedSnapshot | undefined => {
+    const hit = snapshotCache.get(id);
+    if (!hit) return undefined;
+    snapshotCache.delete(id);
+    snapshotCache.set(id, hit);
+    return hit;
+  };
+
+  const rememberSnapshot = (id: string, cached: CachedSnapshot) => {
+    snapshotCache.delete(id);
+    snapshotCache.set(id, cached);
+    while (snapshotCache.size > SNAPSHOT_CACHE_MAX) {
+      const oldest = snapshotCache.keys().next().value as string | undefined;
+      if (!oldest || oldest === id) break;
+      snapshotCache.delete(oldest);
+    }
+  };
+
+  /** Core payload only — a few hundred KB, enough to put the map on screen. */
+  const fetchSnapshotCore = async (id: string, signal?: AbortSignal): Promise<CachedSnapshot> => {
+    const hit = takeCachedSnapshot(id);
+    if (hit) return hit;
+    const urls = snapshotUrls(id);
+    const t0 = performance.now();
+    const [nextCore, nextUsers, overlayRaw, frontRaw] = await Promise.all([
+      fetchJson<SnapshotCore>(urls.core, signal),
+      fetchJson<Record<string, UserStat>>(urls.users, signal),
+      fetchJsonOptional(urls.overlays, signal),
+      fetchJsonOptional(urls.fronts, signal),
+    ]);
+    console.debug(`[olg] snapshot ${id}: core ${(performance.now() - t0).toFixed(0)}ms`);
+    const cached: CachedSnapshot = {
+      core: nextCore,
+      users: nextUsers,
+      overlays: parsePackedOverlays(overlayRaw),
+      fronts: parsePackedFronts(frontRaw),
+      topUsers: null,
+    };
+    rememberSnapshot(id, cached);
+    return cached;
+  };
+
+  /**
+   * Pull the top-user lists in a worker and refresh the panels once they land.
+   * Everything already on screen keeps working while this runs.
+   */
+  const startTopUsers = (id: string, cached: CachedSnapshot) => {
+    topUsersJob?.cancel();
+    topUsersJob = null;
+    topUsers = cached.topUsers;
+    handles?.setTopUsers(topUsers);
+    if (topUsers) return;
+    const t0 = performance.now();
+    const job = loadTopUsers(snapshotUrls(id).topUsers);
+    topUsersJob = job;
+    job.ready.then(
+      (loaded) => {
+        cached.topUsers = loaded;
+        if (topUsersJob !== job) return;
+        topUsersJob = null;
+        topUsers = loaded;
+        console.debug(`[olg] snapshot ${id}: top users ${(performance.now() - t0).toFixed(0)}ms`);
+        handles?.setTopUsers(loaded);
+        refreshPanels();
+      },
+      (err) => {
+        if (topUsersJob === job) topUsersJob = null;
+        if (isAbortError(err)) return;
+        console.error("[olg] cells.bin.gz", err);
+      },
+    );
+  };
+
+  /** Warm the neighbouring snapshots while the browser is idle. */
+  const prefetchNeighbours = () => {
+    const idle =
+      window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
+    idle(() => {
+      for (const id of neighbourSnapshotIds(snapshots, snapshotId)) {
+        if (snapshotCache.has(id)) continue;
+        warmTiles(snapshotUrls(id).pmtiles);
+        void fetchSnapshotCore(id).catch(() => {});
+      }
+    });
+  };
 
   try {
-    const manifestRes = await fetch("./data/snapshots.json");
-    if (!manifestRes.ok) throw new Error(`snapshots.json (${manifestRes.status})`);
-    const manifest = (await manifestRes.json()) as { snapshots?: Snapshot[] };
+    const manifest = await fetchJson<{ snapshots?: Snapshot[] }>("./data/snapshots.json");
     snapshots = (manifest.snapshots ?? []).filter((s) => s.id);
     if (!snapshots.length) throw new Error("snapshots.json ist leer");
-    const startLink = parsePermalink();
-    const wanted = startLink.date;
+    const bootLink = parsePermalink();
+    const wanted = bootLink.date;
     const startSnap =
       (wanted && snapshots.find((s) => s.id === wanted || s.date === wanted)) || snapshots[snapshots.length - 1]!;
     snapshotId = startSnap.id;
-    const urls = snapshotUrls(snapshotId);
-    const prevId = previousSnapshotId(snapshots, snapshotId);
-    const prevUrls = prevId ? snapshotUrls(prevId) : null;
-    const slots: ByteSlot[] = [
-      { loaded: 0, total: 0 },
-      { loaded: 0, total: 0 },
-    ];
-    if (prevUrls) {
-      slots.push({ loaded: 0, total: 0 }, { loaded: 0, total: 0 });
-    }
-    const tick = () => {
-      const loaded = slots.reduce((sum, s) => sum + s.loaded, 0);
-      const total = slots.reduce((sum, s) => sum + s.total, 0);
-      const pct = total > 0 ? Math.min(99, (loaded / total) * 100) : 0;
-      setProgress(pct);
-    };
-    const track = (i: number) => (loaded: number, total: number) => {
-      slots[i] = { loaded, total: total || slots[i]!.total };
-      tick();
-    };
-    const optionalBuffer = (url: string, onProgress: (loaded: number, total: number) => void) =>
-      fetchBuffer(url, onProgress).catch(() => null);
-    const loaded = await Promise.all([
-      fetchBuffer(urls.cells, track(0)),
-      fetchBuffer(urls.users, track(1)),
-      prevUrls ? optionalBuffer(prevUrls.cells, track(2)) : Promise.resolve(null),
-      prevUrls ? optionalBuffer(prevUrls.users, track(3)) : Promise.resolve(null),
-    ]);
-    setProgress(100, "Daten werden gelesen…");
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-    data = normalizeCellsFile(parseJsonBuffer(loaded[0]));
-    users = parseJsonBuffer<Record<string, UserStat>>(loaded[1]);
-    ownerCache.set(snapshotId, extractSnapshotOwners(data, users));
-    if (prevId && loaded[2] && loaded[3]) {
-      const prevData = normalizeCellsFile(parseJsonBuffer(loaded[2]));
-      const prevUsers = parseJsonBuffer<Record<string, UserStat>>(loaded[3]);
-      const owners = extractSnapshotOwners(prevData, prevUsers);
-      ownerCache.set(prevId, owners);
-      previousOwners = owners;
-    }
+    setProgress(40);
+    warmTiles(snapshotUrls(snapshotId).pmtiles);
+    const cached = await fetchSnapshotCore(snapshotId);
+    core = cached.core;
+    users = cached.users;
+    packedOverlays = cached.overlays;
+    packedFronts = cached.fronts;
+    setProgress(100, "Karte wird vorbereitet…");
   } catch (err) {
     loading.innerHTML = `<p>Daten fehlen. Pipeline zuerst ausführen:<br><code>python -m pipeline.run --profile dev --download --history --dates 2025-12-21,2026-03-21,2026-06-21</code></p>`;
     throw err;
@@ -210,7 +296,8 @@ async function main(): Promise<void> {
   const applyLink = (link: ReturnType<typeof parsePermalink>) => {
     filter = link.filter ?? "all";
     mode = link.mode ?? "users";
-    selected = link.cell && data.cells[link.cell] ? link.cell : null;
+    selected = link.cell || null;
+    selectedProps = null;
     highlightedUids.clear();
     for (const name of link.userNames ?? []) {
       const uid = uidByName.get(name);
@@ -227,19 +314,20 @@ async function main(): Promise<void> {
   const snapshotCount = $("snapshot-count");
   const snapshotTicks = $("snapshot-ticks");
   const currentSnapshot = () => snapshots.find((s) => s.id === snapshotId) ?? snapshots[snapshots.length - 1]!;
-  const syncSnapshotLabel = () => {
-    const snap = currentSnapshot();
+  const syncSnapshotLabel = (id = snapshotId) => {
+    const snap = snapshots.find((s) => s.id === id) ?? currentSnapshot();
     snapshotLabel.textContent = snap.label;
-    const idx = Math.max(0, snapshots.findIndex((s) => s.id === snapshotId));
+    snapshotLabel.title = snapshotPeriodHint(snap);
+    const idx = Math.max(0, snapshots.findIndex((s) => s.id === snap.id));
     snapshotSlider.setAttribute("aria-valuetext", snap.label);
     snapshotSlider.setAttribute("aria-valuenow", String(idx));
     const many = snapshots.length > 1;
     generated.hidden = many;
     generated.textContent = many ? "" : snap.label;
-    snapshotTicks.querySelectorAll("button").forEach((btn, i) => {
-      const on = snapshots[i]?.id === snapshotId;
-      btn.classList.toggle("on", on);
-      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    generated.title = many ? "" : snapshotPeriodHint(snap);
+    snapshotTicks.querySelectorAll("[data-index]").forEach((el) => {
+      const on = Number((el as HTMLElement).dataset.index) === idx;
+      el.classList.toggle("on", on);
     });
   };
   const setupSlider = () => {
@@ -251,13 +339,25 @@ async function main(): Promise<void> {
     snapshotSlider.value = String(Math.max(0, snapshots.findIndex((s) => s.id === snapshotId)));
     snapshotCount.textContent = snapshotCountLabel(snapshots.length);
     snapshotTicks.replaceChildren();
+    const n = snapshots.length;
     snapshots.forEach((s, i) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = snapshotShort(s);
-      btn.title = s.label;
-      btn.dataset.index = String(i);
-      snapshotTicks.append(btn);
+      const mark = document.createElement("span");
+      mark.className = "snapshot-tick";
+      mark.dataset.index = String(i);
+      mark.style.left = `${n <= 1 ? 50 : (i / (n - 1)) * 100}%`;
+      if (isSpringSnapshot(s)) {
+        const yearBtn = document.createElement("button");
+        yearBtn.type = "button";
+        yearBtn.className = "snapshot-tick-year";
+        yearBtn.textContent = s.date.slice(0, 4);
+        yearBtn.title = s.label;
+        yearBtn.dataset.index = String(i);
+        yearBtn.tabIndex = -1;
+        if (i === 0) yearBtn.classList.add("edge-start");
+        if (i === n - 1) yearBtn.classList.add("edge-end");
+        mark.append(yearBtn);
+      }
+      snapshotTicks.append(mark);
     });
     syncSnapshotLabel();
   };
@@ -280,7 +380,7 @@ async function main(): Promise<void> {
       legendLabels.classList.add("legend-counts");
       legendLabels.classList.remove("legend-levels");
       legendLabels.replaceChildren();
-      for (const [t, label] of featureLegendMarks(maxFeatureCount(data, filter))) {
+      for (const [t, label] of featureLegendMarks(maxFeatureCount(core.meta, filter))) {
         const span = document.createElement("span");
         span.textContent = label;
         span.style.left = `${Math.round(t * 100)}%`;
@@ -295,22 +395,29 @@ async function main(): Promise<void> {
       legendLabels.innerHTML = "<span>keine / sehr gering</span><span>mittelhoch</span><span>sehr hoch</span>";
     }
   };
-  const placeTick = (el: HTMLElement, h3: string | null) => {
-    const view = h3 && choropleth() ? cellView(data, h3, filter) : null;
+  /** Cell numbers for the current filter, from remembered tile props if we have them. */
+  const statsFor = (h3: string | null, props: TileProps | null): CellStats | null => {
+    if (!h3) return null;
+    if (props) return cellStatsFromTile(props, filter);
+    return handles ? cellStatsFor(handles.map, h3, filter) : null;
+  };
+
+  const placeTick = (el: HTMLElement, h3: string | null, props: TileProps | null) => {
+    const view = choropleth() ? statsFor(h3, props) : null;
     if (!view) {
       el.toggleAttribute("hidden", true);
       return;
     }
     const t =
       mode === "features"
-        ? featureStrength(view.count, maxFeatureCount(data, filter))
-        : cellActivity(view, sparseThreshold(data, filter));
+        ? featureStrength(view.count, maxFeatureCount(core.meta, filter))
+        : cellActivity(view, sparseThreshold(core.meta, filter));
     el.style.left = `${Math.round(Math.max(0, Math.min(1, t)) * 100)}%`;
     el.toggleAttribute("hidden", false);
   };
   const syncLegendTicks = () => {
-    placeTick(hoverTick, hovered);
-    placeTick(selTick, selected);
+    placeTick(hoverTick, hovered, hoveredProps);
+    placeTick(selTick, selected, selectedProps);
   };
 
   const syncHighlight = () => {
@@ -324,22 +431,40 @@ async function main(): Promise<void> {
   };
   let lastCamKey = "";
   let moveTimer = 0;
+  let tileTimer = 0;
+  let neighboursWarmed = false;
   const refreshPanels = (opts?: { fromCamera?: boolean }) => {
     if (!handles) return;
     const camKey = cameraKey();
     if (opts?.fromCamera && camKey === lastCamKey) return;
     lastCamKey = camKey;
-    const threshold = sparseThreshold(data, filter);
-    const view = selected ? cellView(data, selected, filter) : null;
-    const colors = winnerColorByUid(data, filter);
+    const threshold = sparseThreshold(core.meta, filter);
+    const view = cellView(statsFor(selected, selectedProps), filter, topUsers);
+    const colors = winnerColorByUid(core, filter);
     renderHighlightChip($("user-chip"), highlightedUids, users);
-    renderCellPanel($("cell-panel"), view, users, filter, data.centers?.[filter] ?? [], mode, colors, highlightedUids, threshold);
-    let ids = visibleCellIds(handles.map);
-    if (!ids.length) ids = cellsInBounds(handles.map.getBounds(), data.meta.h3_res);
-    const ranked = viewportRanking(ids, data, users, filter);
-    const summary = viewportSummary(ids, data, filter);
+    const asOf =
+      snapshotId && snapshotId === snapshots[snapshots.length - 1]?.id
+        ? snapshotMillis(snapshotId)
+        : null;
+    renderCellPanel($("cell-panel"), view, users, filter, core.centers?.[filter] ?? [], mode, colors, highlightedUids, threshold, asOf);
+    let cells: CellStats[] = visibleCellStats(handles.map, filter);
+    if (!cells.length) {
+      // Tiles are not in yet: fall back to the hexes covering the viewport.
+      cells = cellsInBounds(handles.map.getBounds(), core.meta.h3_res).map((h3) => ({
+        h3,
+        winner: 0,
+        score: 0,
+        currentness: 0,
+        count: 0,
+        meanAgeDays: 0,
+        sparse: true,
+        colorIndex: 0,
+      }));
+    }
+    const ranked = viewportRanking(cells.map((c) => c.h3), users, filter, topUsers, snapshotMillis(snapshotId));
+    const summary = viewportSummary(cells, core.meta, filter, topUsers);
     const osmUrl = osmExtentUrl(handles.map.getCenter(), handles.map.getZoom());
-    renderViewportPanel($("viewport-panel"), ranked, summary, colors, highlightedUids, osmUrl);
+    renderViewportPanel($("viewport-panel"), ranked, summary, colors, highlightedUids, osmUrl, asOf);
     syncLegendTicks();
     const center = handles.map.getCenter();
     writePermalink({
@@ -360,57 +485,55 @@ async function main(): Promise<void> {
     moveTimer = window.setTimeout(() => refreshPanels({ fromCamera: true }), 80);
   };
 
-  setProgress(100, "Karte wird vorbereitet…");
   handles = await createMap(
     $("map"),
-    data,
+    core,
     users,
-    (h3) => {
+    (h3, props) => {
       selected = h3;
+      selectedProps = props;
       refreshPanels();
     },
     onCameraMove,
-    (h3) => {
+    (h3, props) => {
       hovered = h3;
+      hoveredProps = props;
       syncLegendTicks();
     },
     {
       center: [startLink.lng ?? MAP_DEFAULT_CENTER[0], startLink.lat ?? MAP_DEFAULT_CENTER[1]],
       zoom: startLink.zoom ?? MAP_DEFAULT_ZOOM,
       pmtilesUrl: snapshotUrls(snapshotId).pmtiles,
-      fitBboxes:
-        startLink.lat == null || startLink.lng == null
-          ? initialFitBboxes((data.meta.bboxes ?? [data.meta.bbox]) as BBox4[], MAP_DEFAULT_CENTER)
-          : undefined,
-      previousOwners,
+      packedOverlays,
+      packedFronts,
     },
   );
   handles.setFilter(filter);
   handles.setMode(mode);
   handles.setSelection(selected);
   handles.setHighlightUsers([...highlightedUids]);
-
-  const regionsEl = $("regions");
-  const setupRegions = () => {
-    const boxes = (data.meta.bboxes ?? (data.meta.bbox ? [data.meta.bbox] : [])) as BBox4[];
-    const clusters = clusterBboxes(boxes);
-    const many = clusters.length > 1;
-    regionsEl.classList.toggle("hide", !many);
-    regionsEl.toggleAttribute("hidden", !many);
-    regionsEl.replaceChildren();
-    if (!many) return;
-    for (const cl of clusters) {
-      const [sw, ne] = unionBboxes(cl);
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = regionLabel(cl);
-      btn.addEventListener("click", () => {
-        handles?.map.fitBounds([sw, ne], { padding: 56, maxZoom: 13, duration: 600 });
-      });
-      regionsEl.append(btn);
+  // The viewport numbers are read off the rendered hexes, so every arriving tile
+  // can change them. Refreshing per tile (coalesced) rather than once on "idle"
+  // fills the panels as early as possible and keeps them right when a snapshot
+  // switch replaces the tiles under them; "idle" would additionally wait for the
+  // basemap, which the numbers do not depend on.
+  handles.map.on("sourcedata", (e) => {
+    if (e.sourceId !== "h3") return;
+    if (e.tile) {
+      window.clearTimeout(tileTimer);
+      tileTimer = window.setTimeout(() => refreshPanels(), 60);
     }
-  };
-  setupRegions();
+    // Warming the neighbours earlier would make their downloads compete with
+    // the hexes of the snapshot actually on screen.
+    if (e.isSourceLoaded && !neighboursWarmed) {
+      neighboursWarmed = true;
+      prefetchNeighbours();
+    }
+  });
+  const overlaySlider = $("overlay-opacity") as HTMLInputElement;
+  overlaySlider.addEventListener("input", () => {
+    handles?.setOverlayOpacity(Number(overlaySlider.value) / 100);
+  });
 
   let userIndex = Object.entries(users)
     .map(([id, u]) => ({ uid: Number(id), name: u.name, scores: u.scores }))
@@ -420,61 +543,52 @@ async function main(): Promise<void> {
       .map(([id, u]) => ({ uid: Number(id), name: u.name, scores: u.scores }))
       .filter((u) => u.uid && u.name && !u.name.startsWith("#"));
   };
-  const applySnapshot = async (nextId: string) => {
-    if (!nextId || nextId === snapshotId) {
-      setupSlider();
-      return;
-    }
-    const urls = snapshotUrls(nextId);
-    const prevId = previousSnapshotId(snapshots, nextId);
-    const prevUrls = prevId && !ownerCache.has(prevId) ? snapshotUrls(prevId) : null;
-    const optionalBuffer = (url: string) => fetchBuffer(url, () => {}).catch(() => null);
-    const loaded = await Promise.all([
-      fetchBuffer(urls.cells, () => {}),
-      fetchBuffer(urls.users, () => {}),
-      prevUrls ? optionalBuffer(prevUrls.cells) : Promise.resolve(null),
-      prevUrls ? optionalBuffer(prevUrls.users) : Promise.resolve(null),
-    ]);
-    data = normalizeCellsFile(parseJsonBuffer(loaded[0]));
-    users = parseJsonBuffer<Record<string, UserStat>>(loaded[1]);
+  let snapGen = 0;
+  let snapAbort: AbortController | null = null;
+  const applyLoadedSnapshot = (nextId: string, cached: CachedSnapshot) => {
+    core = cached.core;
+    users = cached.users;
+    packedOverlays = cached.overlays;
+    packedFronts = cached.fronts;
     snapshotId = nextId;
-    ownerCache.set(nextId, extractSnapshotOwners(data, users));
-    if (prevId && loaded[2] && loaded[3] && !ownerCache.has(prevId)) {
-      const prevData = normalizeCellsFile(parseJsonBuffer(loaded[2]));
-      const prevUsers = parseJsonBuffer<Record<string, UserStat>>(loaded[3]);
-      ownerCache.set(prevId, extractSnapshotOwners(prevData, prevUsers));
-    }
-    previousOwners = prevId ? (ownerCache.get(prevId) ?? null) : null;
+    // The numbers behind the remembered hexes belong to the old snapshot.
+    selectedProps = null;
+    hoveredProps = null;
     rebuildUidIndex();
     rebuildUserIndex();
-    if (selected && !data.cells[selected]) {
-      selected = null;
-      handles?.setSelection(null);
-    }
     const kept = [...highlightedUids].filter((uid) => users[String(uid)]);
     highlightedUids.clear();
     for (const uid of kept) highlightedUids.add(uid);
-    handles?.setSnapshot(data, users, urls.pmtiles, previousOwners);
+    handles?.setSnapshot(core, users, snapshotUrls(nextId).pmtiles, packedOverlays, packedFronts);
     handles?.setFilter(filter);
     handles?.setMode(mode);
     handles?.setHighlightUsers([...highlightedUids]);
-    setupSlider();
-    setupRegions();
+    startTopUsers(nextId, cached);
+    syncSnapshotLabel();
     syncLegend();
     refreshPanels();
+    neighboursWarmed = false;
+  };
+  const applySnapshot = async (nextId: string) => {
+    if (!nextId) return;
+    syncSnapshotLabel(nextId);
+    snapshotSlider.value = String(Math.max(0, snapshots.findIndex((s) => s.id === nextId)));
+    if (nextId === snapshotId) return;
+    const gen = ++snapGen;
+    snapAbort?.abort();
+    const ac = new AbortController();
+    snapAbort = ac;
+    try {
+      warmTiles(snapshotUrls(nextId).pmtiles);
+      const cached = await fetchSnapshotCore(nextId, ac.signal);
+      if (gen !== snapGen) return;
+      applyLoadedSnapshot(nextId, cached);
+    } catch (err) {
+      if (isAbortError(err) || gen !== snapGen) return;
+      throw err;
+    }
   };
   snapshotSlider.addEventListener("input", () => {
-    const snap = snapshots[Number(snapshotSlider.value)];
-    if (!snap) return;
-    snapshotLabel.textContent = snap.label;
-    snapshotSlider.setAttribute("aria-valuetext", snap.label);
-    snapshotTicks.querySelectorAll("button").forEach((btn, i) => {
-      const on = i === Number(snapshotSlider.value);
-      btn.classList.toggle("on", on);
-      btn.setAttribute("aria-pressed", on ? "true" : "false");
-    });
-  });
-  snapshotSlider.addEventListener("change", () => {
     const snap = snapshots[Number(snapshotSlider.value)];
     if (snap) void applySnapshot(snap.id);
   });
@@ -566,8 +680,17 @@ async function main(): Promise<void> {
   $("board").addEventListener("click", (ev) => {
     const el = ev.target as Element | null;
     if (el?.closest?.("a.osm-ext")) return;
+    const methodBtn = el?.closest?.("button.lede-method-toggle") as HTMLButtonElement | null;
+    if (methodBtn) {
+      const open = methodBtn.getAttribute("aria-expanded") === "true";
+      methodBtn.setAttribute("aria-expanded", open ? "false" : "true");
+      const body = document.getElementById("lede-method-text");
+      if (body) body.hidden = open;
+      return;
+    }
     if (el?.closest?.("button.cell-clear") || el?.closest?.("[data-clear-cell]")) {
       selected = null;
+      selectedProps = null;
       handles?.setSelection(null);
       refreshPanels();
       return;
@@ -628,7 +751,7 @@ async function main(): Promise<void> {
   const modeCur = $("modes").querySelector('[data-mode="currentness"]') as HTMLButtonElement | null;
   const modeFeat = $("modes").querySelector('[data-mode="features"]') as HTMLButtonElement | null;
   if (modeUsers) {
-    modeUsers.title = "Gebiete der aktivsten OSM-User (gewichtet nach Aktualität der Edits und geglättet mit Nachbarwerten).";
+    modeUsers.title = "Gebiete der aktivsten OSM-Mapper:innen (gewichtet nach Aktualität der Edits und geglättet mit Nachbarwerten).";
     modeUsers.classList.add("tip");
   }
   if (modeCur) {
@@ -667,10 +790,15 @@ async function main(): Promise<void> {
   handles.map.on("load", () => {
     loading.classList.add("hide");
     refreshPanels();
+    // Only now, with the map on screen, pull the per-cell top-user lists.
+    const cached = snapshotCache.get(snapshotId);
+    if (cached) startTopUsers(snapshotId, cached);
   });
   handles.map.on("error", (ev) => {
-    console.error(ev);
-    loading.innerHTML = `<p>Karte konnte nicht geladen werden. Details in der Browserkonsole.</p>`;
+    console.error("[olg] map", ev.error?.message ?? ev);
+    if (!loading.classList.contains("hide")) {
+      loading.innerHTML = `<p>Karte konnte nicht geladen werden. Details in der Browserkonsole.</p>`;
+    }
   });
 }
 
