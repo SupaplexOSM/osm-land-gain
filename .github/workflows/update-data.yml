@@ -12,7 +12,7 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Restore snapshots from GitHub Pages
         continue-on-error: true
@@ -23,7 +23,7 @@ jobs:
           echo "Vorhandene Snapshots:"
           ls -1 web/public/data || true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -40,11 +40,15 @@ jobs:
           OSM_USER: ${{ secrets.OSM_USER }}
           OSM_PASSWORD: ${{ secrets.OSM_PASSWORD }}
         run: |
+          if [ -z "$OSM_USER" ] || [ -z "$OSM_PASSWORD" ]; then
+            echo "Repository-Secrets OSM_USER und OSM_PASSWORD fehlen." >&2
+            exit 1
+          fi
           SNAPSHOT=$(python -c "from pipeline.snapshots import snapshot_date_for_run; print(snapshot_date_for_run().isoformat())")
           echo "Stichtag $SNAPSHOT"
           python -m pipeline.run --profile prod --download --snapshot "$SNAPSHOT" --out web/public/data
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
