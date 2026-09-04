@@ -1,0 +1,69 @@
+{
+  "generated": "2026-06-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    7.5274,
+    47.5267,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ],
+    [
+      7.5274,
+      47.5267,
+      7.8302,
+      47.7026
+    ]
+  ],
+  "max_score": {
+    "all": 1139.0,
+    "highway": 292.0,
+    "building": 225.6,
+    "landuse": 693.0,
+    "place": 131.0,
+    "furniture": 644.0
+  },
+  "max_count": {
+    "all": 3389,
+    "highway": 708,
+    "building": 2621,
+    "landuse": 940,
+    "place": 230,
+    "furniture": 1348
+  },
+  "id": "2026-06-21",
+  "date": "2026-06-21",
+  "season": "sommer",
+  "short": "Sommer 2026",
+  "label": "Datenstand: Sommer 2026",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. M\u00e4rz bis 21. Juni 2026"
+}

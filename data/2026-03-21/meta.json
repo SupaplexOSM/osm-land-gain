@@ -1,0 +1,68 @@
+{
+  "generated": "2026-03-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    7.5274,
+    47.5267,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ],
+    [
+      7.5274,
+      47.5267,
+      7.8302,
+      47.7026
+    ]
+  ],
+  "id": "2026-03-21",
+  "date": "2026-03-21",
+  "season": "fruehling",
+  "short": "Fr\u00fchling 2026",
+  "label": "Datenstand: Fr\u00fchling 2026",
+  "max_score": {
+    "all": 991.3,
+    "highway": 225.2,
+    "building": 226.2,
+    "landuse": 693.0,
+    "place": 138.0,
+    "furniture": 644.0
+  },
+  "max_count": {
+    "all": 3384,
+    "highway": 690,
+    "building": 2621,
+    "landuse": 765,
+    "place": 233,
+    "furniture": 1348
+  }
+}
