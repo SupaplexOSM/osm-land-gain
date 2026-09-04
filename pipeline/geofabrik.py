@@ -12,11 +12,12 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 
-from .config import GEOFABRIK_COOKIE_URL
+from .config import GEOFABRIK_COOKIE_URL, GEOFABRIK_INTERNAL
 
 USER_AGENT = "osm-land-gain/1.0 (+https://github.com/supaplexosm/osm-land-gain)"
 HEADERS = {"User-Agent": USER_AGENT}
 COOKIE_MAX_AGE_S = 20 * 3600
+COOKIE_DOMAIN = "osm-internal.download.geofabrik.de"
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "pipeline" / "_cache"
 CREDENTIALS_FILE = CACHE / "geofabrik-credentials.json"
@@ -64,17 +65,49 @@ def prompt_write_credentials() -> Path:
 
 def load_credentials() -> tuple[str, str]:
     user = os.environ.get("OSM_USER", "").strip()
-    password = os.environ.get("OSM_PASSWORD", "")
+    # GitHub Secrets often append a trailing newline; strip only that edge whitespace.
+    password = os.environ.get("OSM_PASSWORD", "").strip()
     if CREDENTIALS_FILE.exists():
         data = json.loads(CREDENTIALS_FILE.read_text(encoding="utf-8"))
         user = user or str(data.get("user") or "").strip()
-        password = password or str(data.get("password") or "")
+        password = password or str(data.get("password") or "").strip()
     if not user or not password:
         raise GeofabrikAuthError(
             "OSM-Zugang fehlt. Setze OSM_USER und OSM_PASSWORD oder lege "
             f"{CREDENTIALS_FILE} an mit: python -m pipeline.geofabrik --write-credentials"
         )
     return user, password
+
+
+def apply_cookie(session: requests.Session, cookie: str) -> None:
+    """Put a ``format=http`` cookie into the jar so redirects keep auth.
+
+    Setting ``Cookie`` via request headers is not enough: ``requests`` drops that
+    header when following the latest→dated 302 on osm-internal.download.geofabrik.de,
+    which then answers 403 HTML instead of the PBF.
+    """
+    text = cookie.strip()
+    if not text or "=" not in text:
+        raise GeofabrikAuthError("Ungültiges Geofabrik-Cookie.")
+    session.cookies.clear()
+    for part in text.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name, value = name.strip(), value.strip().strip('"')
+        if not name:
+            continue
+        session.cookies.set(name, value, domain=COOKIE_DOMAIN, path="/")
+
+
+def cookie_status(session: requests.Session) -> dict:
+    """Return the JSON from ``/cookie_status`` (empty dict on transport errors)."""
+    try:
+        res = session.get(f"{GEOFABRIK_INTERNAL}/cookie_status", timeout=30)
+        return res.json() if res.content else {}
+    except (OSError, ValueError, requests.RequestException):
+        return {}
 
 
 def _fetch_cookie(user: str, password: str) -> str:
@@ -190,21 +223,27 @@ def download_internal(url: str, dest: Path, *, cookie: str | None = None) -> Pat
         return dest
     cookie = cookie or geofabrik_cookie()
     print(f"Lade {url} → {dest}")
-    headers = {**HEADERS, "Cookie": cookie}
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    apply_cookie(session, cookie)
 
     def _get() -> requests.Response:
-        return requests.get(url, headers=headers, stream=True, timeout=120)
+        return session.get(url, stream=True, timeout=120)
 
     res = _get()
     if res.status_code in {401, 403}:
         res.close()
         cookie = geofabrik_cookie(force=True)
-        headers["Cookie"] = cookie
+        apply_cookie(session, cookie)
         res = _get()
     try:
-        if res.status_code != 200:
+        content_type = (res.headers.get("content-type") or "").lower()
+        if res.status_code != 200 or "text/html" in content_type:
+            status = cookie_status(session)
+            detail = status.get("description") or status.get("cookie_status") or ""
+            extra = f" Cookie-Status: {detail}" if detail else ""
             raise GeofabrikAuthError(
-                f"Download fehlgeschlagen: {url} (HTTP {res.status_code})."
+                f"Download fehlgeschlagen: {url} (HTTP {res.status_code}).{extra}"
             )
         total = int(res.headers.get("content-length") or 0)
         tmp = dest.with_suffix(dest.suffix + ".part")
@@ -224,6 +263,7 @@ def download_internal(url: str, dest: Path, *, cookie: str | None = None) -> Pat
         tmp.replace(dest)
     finally:
         res.close()
+        session.close()
     print(f"  fertig ({dest.stat().st_size / 1e6:.1f} MB)")
     return dest
 

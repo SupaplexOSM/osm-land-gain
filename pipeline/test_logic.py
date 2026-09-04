@@ -399,6 +399,18 @@ def test_profile_bboxes() -> None:
     assert [src.id for src in prod.sources] == ["berlin", "brandenburg", "freiburg-regbez"]
 
 
+def test_apply_cookie_parses_http_format() -> None:
+    import requests
+
+    from pipeline.geofabrik import COOKIE_DOMAIN, apply_cookie
+
+    session = requests.Session()
+    apply_cookie(session, 'gf_download_oauth="login|2018-04-12|token"')
+    assert session.cookies.get("gf_download_oauth", domain=COOKIE_DOMAIN) == "login|2018-04-12|token"
+    apply_cookie(session, "gf_download_oauth=login|2018-04-12|plain")
+    assert session.cookies.get("gf_download_oauth", domain=COOKIE_DOMAIN) == "login|2018-04-12|plain"
+
+
 if __name__ == "__main__":
     test_age_weight()
     test_color_stable()
@@ -418,4 +430,5 @@ if __name__ == "__main__":
     test_prune_and_manifest()
     test_parse_dates()
     test_profile_bboxes()
+    test_apply_cookie_parses_http_format()
     print("weights ok")
