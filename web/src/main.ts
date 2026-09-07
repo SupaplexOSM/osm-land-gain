@@ -15,6 +15,8 @@ import {
   cellStatsFor,
   cellView,
   cellsInBounds,
+  densityBins,
+  densitySvgPaths,
   featureLegendMarks,
   featureStrength,
   maxFeatureCount,
@@ -420,6 +422,19 @@ async function main(): Promise<void> {
     placeTick(selTick, selected, selectedProps);
   };
 
+  const legendHistoFill = document.querySelector("#legend-histo .legend-histo-fill");
+  const legendHistoLine = document.querySelector("#legend-histo .legend-histo-line");
+  const drawLegendDensity = (cells: CellStats[]) => {
+    if (!legendHistoFill || !legendHistoLine) return;
+    const values =
+      mode === "features"
+        ? cells.map((c) => featureStrength(c.count, maxFeatureCount(core.meta, filter)))
+        : cells.map((c) => cellActivity(c, sparseThreshold(core.meta, filter)));
+    const { fill, line } = densitySvgPaths(densityBins(values));
+    legendHistoFill.setAttribute("d", fill);
+    legendHistoLine.setAttribute("d", line);
+  };
+
   const syncHighlight = () => {
     handles?.setHighlightUsers([...highlightedUids]);
   };
@@ -464,7 +479,8 @@ async function main(): Promise<void> {
     const ranked = viewportRanking(cells.map((c) => c.h3), users, filter, topUsers, snapshotMillis(snapshotId));
     const summary = viewportSummary(cells, core.meta, filter, topUsers);
     const osmUrl = osmExtentUrl(handles.map.getCenter(), handles.map.getZoom());
-    renderViewportPanel($("viewport-panel"), ranked, summary, colors, highlightedUids, osmUrl, asOf);
+    renderViewportPanel($("viewport-panel"), ranked, summary, colors, highlightedUids, osmUrl, asOf, filter);
+    drawLegendDensity(cells);
     syncLegendTicks();
     const center = handles.map.getCenter();
     writePermalink({
@@ -751,15 +767,15 @@ async function main(): Promise<void> {
   const modeCur = $("modes").querySelector('[data-mode="currentness"]') as HTMLButtonElement | null;
   const modeFeat = $("modes").querySelector('[data-mode="features"]') as HTMLButtonElement | null;
   if (modeUsers) {
-    modeUsers.title = "Gebiete der aktivsten OSM-Mapper:innen (gewichtet nach Aktualität der Edits und geglättet mit Nachbarwerten).";
+    modeUsers.title = "Gebiete der aktivsten Mapper:innen (gewichtet nach Aktualität der Edits und geglättet mit Nachbarwerten).";
     modeUsers.classList.add("tip");
   }
   if (modeCur) {
-    modeCur.title = "Färbung nach Mapping-Aktivitäten. Jüngere Edits zählen stärker.";
+    modeCur.title = "Färbung nach Mapping-Aktivität: Wo fanden zuetzt die meisten Edits statt?";
     modeCur.classList.add("tip");
   }
   if (modeFeat) {
-    modeFeat.title = "Färbung nach Anzahl/Dichte der OSM-Features in einem Gebiet.";
+    modeFeat.title = "Färbung nach Anzahl der Objekte im gewählten Filter: Wie viele Features dieser Art gibt es im jeweiligen Gitterfeld?";
     modeFeat.classList.add("tip");
   }
   syncLegend();

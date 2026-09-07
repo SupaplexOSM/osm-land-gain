@@ -63,6 +63,11 @@ def _clamp_depth(n: int) -> int:
     return 3
 
 
+def _halve_island_depth(raw: int) -> int:
+    """New blobs expand both ways, so only half the thickness counts (1.5 → 2)."""
+    return _clamp_depth(max(1, int(raw / 2 + 0.5)))
+
+
 def _new_land_component(
     start: str,
     user: str,
@@ -89,7 +94,7 @@ def _new_land_component(
 
 def _island_extent(cells: list[str]) -> int:
     if len(cells) <= 2:
-        return 1
+        return _halve_island_depth(1 if len(cells) <= 1 else 2)
     origin = cells[0]
     min_i = min_j = math.inf
     max_i = max_j = -math.inf
@@ -105,8 +110,10 @@ def _island_extent(cells: list[str]) -> int:
         max_j = max(max_j, j)
         ok += 1
     if ok < 2:
-        return 2 if len(cells) <= 6 else 3
-    return _clamp_depth(int(min(max_i - min_i + 1, max_j - min_j + 1)))
+        raw = 2 if len(cells) <= 6 else 3
+    else:
+        raw = int(min(max_i - min_i + 1, max_j - min_j + 1))
+    return _halve_island_depth(raw)
 
 
 def _advance_depth(

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
-FILTERS = ("all", "highway", "building", "landuse", "place", "furniture")
+FILTERS = ("all", "highway", "building", "landuse", "place", "furniture", "notes", "streetcomplete")
+THEME_FILTERS = ("highway", "building", "landuse", "place", "furniture")
 
 SPARSE_COUNT: dict[str, int] = {
     "all": 20,
@@ -14,6 +15,8 @@ SPARSE_COUNT: dict[str, int] = {
     "landuse": 8,
     "place": 3,
     "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4,
 }
 
 # Internal filter id "landuse" = landscape (UI: Landschaft).
@@ -126,9 +129,6 @@ FURNITURE_AMENITY_VALUES = frozenset(
         "clock",
         "bicycle_parking",
         "motorcycle_parking",
-        "parking",
-        "parking_space",
-        "parking_entrance",
         "taxi",
         "bicycle_repair_station",
         "parcel_locker",
@@ -178,7 +178,7 @@ def filters_for_tags(tags: Mapping[str, str]) -> list[str]:
     out = ["all"]
     if "highway" in keys:
         out.append("highway")
-    if "building" in keys:
+    if "building" in keys or "building:part" in keys:
         out.append("building")
     if keys & LANDSCAPE_KEYS or tags.get("leisure") in LANDSCAPE_LEISURE:
         out.append("landuse")
@@ -189,8 +189,16 @@ def filters_for_tags(tags: Mapping[str, str]) -> list[str]:
     return out
 
 
+def in_bboxes(lon: float, lat: float, bboxes: tuple[BBox, ...] | list[BBox]) -> bool:
+    for west, south, east, north in bboxes:
+        if west <= lon <= east and south <= lat <= north:
+            return True
+    return False
+
+
 AREA_KEYS = (
     "building",
+    "building:part",
     "landuse",
     "natural",
     "leisure",
@@ -206,7 +214,13 @@ FILTER_PREFIX = {
     "landuse": "l",
     "place": "p",
     "furniture": "f",
+    "notes": "nt",
+    "streetcomplete": "sc",
 }
+
+USER_AGENT = "osm-land-gain/1.0 (+https://github.com/supaplexosm/osm-land-gain)"
+PLANET_NOTES_URL = "https://planet.openstreetmap.org/notes/planet-notes-latest.osn.bz2"
+PLANET_CHANGESETS_URL = "https://planet.openstreetmap.org/planet/changesets-latest.osm.bz2"
 
 GEOFABRIK_INTERNAL = "https://osm-internal.download.geofabrik.de"
 GEOFABRIK_COOKIE_URL = f"{GEOFABRIK_INTERNAL}/get_cookie"

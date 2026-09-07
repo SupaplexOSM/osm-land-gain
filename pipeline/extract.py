@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from typing import Iterable
+from typing import Container, Iterable, Mapping
 
 import h3
 import osmium
@@ -12,12 +12,65 @@ import osmium
 from .config import FILTERS, Config, filters_for_tags
 from .weights import age_weight
 
-# cell -> filter -> uid -> [count, weight, last_ts, age_days_sum]
+# cell -> filter -> uid ->
+# [count, weight_share, last_ts, age_days_sum, recent_count_share, recent_weight_share, full_weight]
 CellAcc = dict[str, dict[str, dict[int, list[float]]]]
+NEWCOMER_RECENT_DAYS = 365
+_REC_LEN = 7
+_EMPTY_REC = (0.0,) * _REC_LEN
 
 
 def feature_filters(tags: osmium.osm.TagList) -> list[str]:
     return filters_for_tags({t.k: t.v for t in tags})
+
+
+def object_filters(
+    tags: Mapping[str, str],
+    changeset: int = 0,
+    sc_changesets: Container[int] | None = None,
+) -> list[str]:
+    """Tag filters plus StreetComplete when the last changeset used that editor."""
+    filters = filters_for_tags(tags)
+    if sc_changesets is not None and changeset in sc_changesets:
+        filters.append("streetcomplete")
+    return filters
+
+
+def credit_cells(
+    acc: CellAcc,
+    users: UserIndex,
+    cells: Iterable[str],
+    filters: Iterable[str],
+    name: str,
+    ts: datetime,
+    today: date,
+) -> None:
+    uid_key = users.uid(name)
+    cell_ids = list(cells)
+    n = len(cell_ids)
+    if n == 0:
+        return
+    weight = age_weight(ts, today)
+    share = weight / n
+    count_share = 1.0 / n
+    unix = ts.timestamp()
+    age_days = max(0.0, (today - ts.date()).days)
+    recent = age_days <= NEWCOMER_RECENT_DAYS
+    for cell in cell_ids:
+        bucket = acc[cell]
+        for filt in filters:
+            rec = bucket[filt][uid_key]
+            if len(rec) < _REC_LEN:
+                rec.extend([0.0] * (_REC_LEN - len(rec)))
+            rec[0] += 1
+            rec[1] += share
+            if unix > rec[2]:
+                rec[2] = unix
+            rec[3] += age_days
+            if recent:
+                rec[4] += count_share
+                rec[5] += share
+            rec[6] += weight
 
 
 def is_polygon_way(way: osmium.osm.Way) -> bool:
@@ -30,6 +83,7 @@ def is_polygon_way(way: osmium.osm.Way) -> bool:
         return True
     polygon_hints = {
         "building",
+        "building:part",
         "landuse",
         "natural",
         "leisure",
@@ -158,12 +212,13 @@ class UserIndex:
 
 
 class ScoreHandler(osmium.SimpleHandler):
-    def __init__(self, cfg: Config, today: date) -> None:
+    def __init__(self, cfg: Config, today: date, sc_changesets: Container[int] | None = None) -> None:
         super().__init__()
         self.cfg = cfg
         self.today = today
+        self.sc_changesets = sc_changesets
         self.users = UserIndex()
-        self.cells: CellAcc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])))
+        self.cells: CellAcc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: list(_EMPTY_REC))))
         self.wkbfab = osmium.geom.WKBFactory()
         self.seen = 0
         self.kept = 0
@@ -177,6 +232,7 @@ class ScoreHandler(osmium.SimpleHandler):
         timestamp: object,
         tags: osmium.osm.TagList,
         cells: Iterable[str],
+        changeset: int = 0,
     ) -> None:
         name = (user or "").strip()
         if not name and uid:
@@ -184,32 +240,20 @@ class ScoreHandler(osmium.SimpleHandler):
         ts = as_datetime(timestamp)
         if not name or ts is None or not cells:
             return
-        uid_key = self.users.uid(name)
-        weight = age_weight(ts, self.today)
-        unix = ts.timestamp()
-        age_days = max(0.0, (self.today - ts.date()).days)
-        filters = feature_filters(tags)
+        filters = object_filters({t.k: t.v for t in tags}, changeset, self.sc_changesets)
         self.kept += 1
         for filt in filters:
             self.filter_kept[filt] += 1
         if self.kept % 200_000 == 0:
             print(f"  gewertet: {self.kept:,}", flush=True)
-        for cell in cells:
-            bucket = self.cells[cell]
-            for filt in filters:
-                rec = bucket[filt][uid_key]
-                rec[0] += 1
-                rec[1] += weight
-                if unix > rec[2]:
-                    rec[2] = unix
-                rec[3] += age_days
+        credit_cells(self.cells, self.users, cells, filters, name, ts, self.today)
 
     def node(self, n: osmium.osm.Node) -> None:
         self.seen += 1
         if not n.tags or not n.location.valid():
             return
         cell = h3.latlng_to_cell(n.location.lat, n.location.lon, self.cfg.h3_res)
-        self._credit(n.user, n.uid, n.timestamp, n.tags, (cell,))
+        self._credit(n.user, n.uid, n.timestamp, n.tags, (cell,), n.changeset)
 
     def way(self, w: osmium.osm.Way) -> None:
         self.seen += 1
@@ -222,7 +266,7 @@ class ScoreHandler(osmium.SimpleHandler):
             coords.append((node.location.lat, node.location.lon))
         if len(coords) < 2:
             return
-        self._credit(w.user, w.uid, w.timestamp, w.tags, cells_for_line(coords, self.cfg.h3_res))
+        self._credit(w.user, w.uid, w.timestamp, w.tags, cells_for_line(coords, self.cfg.h3_res), w.changeset)
 
     def area(self, a: osmium.osm.Area) -> None:
         self.seen += 1
@@ -256,13 +300,18 @@ class ScoreHandler(osmium.SimpleHandler):
                     if len(hole) >= 3:
                         holes.append(hole)
                 cells = cells_for_polygon([outer, *holes], self.cfg.h3_res)
-                self._credit(a.user, a.uid, a.timestamp, a.tags, cells)
+                self._credit(a.user, a.uid, a.timestamp, a.tags, cells, a.changeset)
             except Exception:
                 self.area_errors += 1
 
 
-def extract_pbf(pbf_path: str, cfg: Config, today: date | None = None) -> tuple[CellAcc, UserIndex]:
-    handler = ScoreHandler(cfg, today or date.today())
+def extract_pbf(
+    pbf_path: str,
+    cfg: Config,
+    today: date | None = None,
+    sc_changesets: Container[int] | None = None,
+) -> tuple[CellAcc, UserIndex]:
+    handler = ScoreHandler(cfg, today or date.today(), sc_changesets)
     print("Lese PBF (Nodes, Ways, Flächen)…")
     handler.apply_file(pbf_path, locations=True, idx="flex_mem")
     print(f"OSM-Objekte gesehen: {handler.seen:,}, gewertet: {handler.kept:,}, User: {len(handler.users.names) - 1:,}, Zellen mit Daten: {len(handler.cells):,}")

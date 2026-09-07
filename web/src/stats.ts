@@ -127,6 +127,27 @@ export interface RankedUser {
   lastTs: number;
   specialties: UserStat["specialties"];
   recency: RecencyTier;
+  /** 1-based rank in the full viewport list. */
+  rank: number;
+  newcomer: boolean;
+}
+
+export const NEWCOMER_MIN_RECENT = 25;
+export const NEWCOMER_SCORE_SHARE = 0.9;
+/** Must have a last-editor touch in the visible cells within this many days. */
+export const NEWCOMER_VIEWPORT_DAYS = 365;
+
+export function isNewcomer(user: UserStat | undefined): boolean {
+  if (!user) return false;
+  const recent = user.edits_recent ?? 0;
+  const scoreRecent = user.score_recent ?? 0;
+  const total = user.scores?.all ?? 0;
+  return recent >= NEWCOMER_MIN_RECENT && total > 0 && scoreRecent >= NEWCOMER_SCORE_SHARE * total;
+}
+
+function hadRecentViewportTouch(lastTs: number, now: number): boolean {
+  if (!lastTs) return false;
+  return (now - lastTs) / DAY_MS <= NEWCOMER_VIEWPORT_DAYS;
 }
 
 /** Users active in the given cells, best first. Null until cells.bin.gz arrived. */
@@ -149,9 +170,14 @@ export function viewportRanking(
       lastTs: val.lastTs,
       specialties: u.specialties,
       recency: recencyTier(val.lastTs, now),
+      rank: 0,
+      newcomer: isNewcomer(u) && hadRecentViewportTouch(val.lastTs, now),
     });
   }
   ranked.sort((a, b) => b.score - a.score);
+  ranked.forEach((row, i) => {
+    row.rank = i + 1;
+  });
   return ranked;
 }
 
@@ -218,6 +244,8 @@ export interface ViewportSummary {
   objects: number;
   currentness: number;
   level: ActivityLevel;
+  /** Share of visible cells (incl. empty) with activityLevel 6 or 7. */
+  highShare: number;
 }
 
 export function viewportSummary(
@@ -229,8 +257,11 @@ export function viewportSummary(
   const threshold = sparseThreshold(meta, filter);
   const values: number[] = [];
   let objects = 0;
+  let high = 0;
   for (const cell of cells) {
-    values.push(cellActivity(cell, threshold));
+    const value = cellActivity(cell, threshold);
+    values.push(value);
+    if (activityLevel(value) >= 6) high += 1;
     if (cell.count > 0) objects += cell.count;
   }
   const currentness = median(values);
@@ -239,7 +270,69 @@ export function viewportSummary(
     objects,
     currentness,
     level: viewportActivityLevel(currentness),
+    highShare: cells.length ? high / cells.length : 0,
   };
+}
+
+/** Equal-width histogram of 0–1 values, for the legend density curve. */
+export const LEGEND_DENSITY_BINS = 24;
+
+export function densityBins(values: number[], binCount = LEGEND_DENSITY_BINS): number[] {
+  const n = Math.max(1, binCount);
+  const counts = new Array<number>(n).fill(0);
+  for (const raw of values) {
+    const t = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;
+    const i = t >= 1 ? n - 1 : Math.floor(t * n);
+    counts[i]! += 1;
+  }
+  return counts;
+}
+
+const DENSITY_W = 100;
+const DENSITY_H = 32;
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function catmullRomPath(points: Array<[number, number]>, h: number): string {
+  const fmt = (x: number, y: number) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+  if (!points.length) return `M 0 ${h.toFixed(2)}`;
+  if (points.length === 1) return `M ${fmt(points[0]![0], points[0]![1])}`;
+  let d = `M ${fmt(points[0]![0], points[0]![1])}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] ?? points[i]!;
+    const p1 = points[i]!;
+    const p2 = points[i + 1]!;
+    const p3 = points[i + 2] ?? p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = clamp(p1[1] + (p2[1] - p0[1]) / 6, 0, h);
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = clamp(p2[1] - (p3[1] - p1[1]) / 6, 0, h);
+    d += ` C ${fmt(c1x, c1y)}, ${fmt(c2x, c2y)}, ${fmt(p2[0], p2[1])}`;
+  }
+  return d;
+}
+
+/** Smoothed area + stroke paths for the legend density SVG (viewBox 0 0 100 32). */
+export function densitySvgPaths(counts: number[]): { fill: string; line: string } {
+  const w = DENSITY_W;
+  const h = DENSITY_H;
+  const n = counts.length;
+  const max = n ? Math.max(...counts) : 0;
+  if (!n || max <= 0) {
+    const y = h.toFixed(2);
+    const line = `M 0 ${y} L ${w} ${y}`;
+    return { fill: `${line} L ${w} ${h} L 0 ${h} Z`, line };
+  }
+  const top = 1.25;
+  const pts: Array<[number, number]> = counts.map((c, i) => {
+    const x = n === 1 ? 0 : (i / (n - 1)) * w;
+    const y = top + (1 - c / max) * (h - top);
+    return [x, y];
+  });
+  const line = catmullRomPath(pts, h);
+  return { fill: `${line} L ${w} ${h} L 0 ${h} Z`, line };
 }
 
 export function formatAge(lastTs: number, now = Date.now()): string {

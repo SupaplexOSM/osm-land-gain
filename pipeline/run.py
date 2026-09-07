@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
 from .binpack import CELLS_NAME
+from .changesets import ensure_streetcomplete_ids
 from .config import PROFILES, Config, config_for_profile
 from .export import (
     migrate_legacy_snapshot,
@@ -19,6 +21,7 @@ from .export import (
 )
 from .extract import cells_for_bboxes, extract_pbf
 from .geofabrik import GeofabrikAuthError, CACHE as PBF_CACHE, geofabrik_cookie
+from .notes import credit_closed_notes, ensure_notes_dump
 from .osm_prep import (
     OsmiumError,
     TMP,
@@ -87,10 +90,21 @@ def _upgrade_snapshots(out_dir: Path) -> None:
         _write_sidecars(snap_dir, date.fromisoformat(snap_dir.name))
 
 
-def run_snapshot(pbf: Path, snap_dir: Path, cfg: Config, snapshot: date) -> None:
+def run_snapshot(
+    pbf: Path,
+    snap_dir: Path,
+    cfg: Config,
+    snapshot: date,
+    *,
+    sc_ids: set[int] | None = None,
+    notes_path: Path | None = None,
+) -> None:
     entry = snapshot_entry(snapshot)
     print(f"Auswertung {entry['label']} ({pbf})…")
-    acc, users = extract_pbf(str(pbf), cfg, snapshot)
+    acc, users = extract_pbf(str(pbf), cfg, snapshot, sc_ids)
+    if notes_path is not None:
+        print(f"Notes bis {snapshot.isoformat()}…", flush=True)
+        credit_closed_notes(notes_path, snapshot, cfg, acc, users)
     all_cells = cells_for_bboxes(cfg.bboxes, cfg.h3_res)
     all_cells.update(acc.keys())
     print(f"H3-Zellen (inkl. leerer Felder): {len(all_cells):,}")
@@ -101,6 +115,36 @@ def run_snapshot(pbf: Path, snap_dir: Path, cfg: Config, snapshot: date) -> None
     write_pmtiles(snap_dir / "cells.pmtiles", records, cfg)
     _write_sidecars(snap_dir, snapshot, records, {str(uid): st for uid, st in user_stats.items()})
     print(f"Fertig: {snap_dir}")
+
+
+def _planet_inputs(
+    cache: Path,
+    out_dir: Path,
+    *,
+    skip: bool,
+    refresh: bool,
+) -> tuple[set[int] | None, Path | None]:
+    """StreetComplete IDs and notes dump for extract. Cache is local; gh-pages only gets the ID file."""
+    if skip:
+        print("Überspringe Notes- und Changeset-Dumps (--skip-planet).")
+        return None, None
+    sc_ids = ensure_streetcomplete_ids(
+        cache / "streetcomplete-changesets.bin.gz",
+        out_dir / "_meta" / "streetcomplete-changesets.bin.gz",
+        refresh=refresh,
+    )
+    notes_path = ensure_notes_dump(cache, refresh=refresh)
+    return sc_ids, notes_path
+
+
+def _drop_notes_dump(notes_path: Path | None) -> None:
+    if notes_path is None or not os.environ.get("GITHUB_ACTIONS"):
+        return
+    try:
+        notes_path.unlink(missing_ok=True)
+        print(f"Notes-Dump gelöscht: {notes_path}")
+    except OSError:
+        pass
 
 
 def _unlink_quiet(path: Path) -> None:
@@ -145,6 +189,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dates", help="Kommagetrennte Stichtage YYYY-MM-DD (mit --history; Standard: letzte 12 Quartale)")
     parser.add_argument("--snapshot", help="Stichtag YYYY-MM-DD für den aktuellen Latest-Extract")
     parser.add_argument("--force", action="store_true", help="Vorhandene Snapshots neu berechnen")
+    parser.add_argument(
+        "--skip-planet",
+        action="store_true",
+        help="Notes- und Changeset-Dump überspringen (Filter notes/streetcomplete bleiben leer)",
+    )
+    parser.add_argument(
+        "--refresh-planet",
+        action="store_true",
+        help="Notes-Dump und StreetComplete-IDs neu holen, Cache ignorieren",
+    )
     parser.add_argument("--tiles-only", action="store_true", help="Nur PMTiles aus den Snapshot-Binärdateien neu bauen")
     parser.add_argument(
         "--upgrade",
@@ -200,17 +254,31 @@ def main(argv: list[str] | None = None) -> int:
         latest_date = snapshot_date_for_run()
         print(f"Kein --snapshot, nutze Stichtag {latest_date.isoformat()}.")
 
+    if args.pbf and not args.pbf.exists():
+        print(f"PBF nicht gefunden: {args.pbf}", file=sys.stderr)
+        return 1
+
     PBF_CACHE.mkdir(parents=True, exist_ok=True)
     TMP.mkdir(parents=True, exist_ok=True)
     args.out.mkdir(parents=True, exist_ok=True)
+    sc_ids, notes_path = _planet_inputs(
+        PBF_CACHE,
+        args.out,
+        skip=args.skip_planet,
+        refresh=args.refresh_planet,
+    )
 
     try:
         if args.pbf:
-            if not args.pbf.exists():
-                print(f"PBF nicht gefunden: {args.pbf}", file=sys.stderr)
-                return 1
             when = latest_date or snapshot_date_for_run()
-            run_snapshot(args.pbf, args.out / when.isoformat(), cfg, when)
+            run_snapshot(
+                args.pbf,
+                args.out / when.isoformat(),
+                cfg,
+                when,
+                sc_ids=sc_ids,
+                notes_path=notes_path,
+            )
         else:
             if args.download or latest_date is not None or args.history:
                 cookie = geofabrik_cookie()
@@ -218,7 +286,14 @@ def main(argv: list[str] | None = None) -> int:
                 cookie = ""
             if latest_date is not None:
                 pbf = prepare_latest_pbf(profile.sources, PBF_CACHE, TMP, cookie)
-                run_snapshot(pbf, args.out / latest_date.isoformat(), cfg, latest_date)
+                run_snapshot(
+                    pbf,
+                    args.out / latest_date.isoformat(),
+                    cfg,
+                    latest_date,
+                    sc_ids=sc_ids,
+                    notes_path=notes_path,
+                )
             if args.history:
                 clips = clip_history_sources(profile.sources, PBF_CACHE, TMP, cookie)
                 for when in snapshot_dates:
@@ -227,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"Überspringe {when.isoformat()} (bereits vorhanden).")
                         continue
                     pbf, parts = snapshot_pbf_from_clips(clips, TMP, when)
-                    run_snapshot(pbf, snap_dir, cfg, when)
+                    run_snapshot(pbf, snap_dir, cfg, when, sc_ids=sc_ids, notes_path=notes_path)
                     _unlink_quiet(pbf)
                     for part in parts:
                         _unlink_quiet(part)
@@ -237,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except OsmiumError as err:
         return die_osmium(err)
+    finally:
+        _drop_notes_dump(notes_path)
 
     _upgrade_snapshots(args.out)
     write_snapshots_manifest(args.out)

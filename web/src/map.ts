@@ -45,6 +45,8 @@ export interface MapHandles {
 
 const LABEL_FONT = ["Noto Sans Regular"];
 const LABEL_FONT_BOLD = ["Noto Sans Bold"];
+/** Hex fill in every view mode so the basemap stays readable. */
+const HEX_FILL_OP = 0.72;
 
 function hatchImage(): { width: number; height: number; data: Uint8Array } {
   const s = 16;
@@ -442,28 +444,28 @@ export async function createMap(
     let sparseFilter: maplibregl.FilterSpecification = ["all", occupied, sparse];
     let dimColor: maplibregl.ExpressionSpecification | string = DIM_GRAY;
     let dimFilter: maplibregl.FilterSpecification = HIDDEN_FILTER;
-    let fillOpacity = 0.72;
+    let fillOpacity = HEX_FILL_OP;
     let sparseFill = 0.14;
     let dimFill = 0;
     if (!highlighted) {
       if (mode === "users") {
         fillColor = matchMeeple(ci);
         fillFilter = ["all", occupied, notSparse];
-        fillOpacity = 0.72;
+        fillOpacity = HEX_FILL_OP;
         sparseColor = PARCHMENT;
         sparseFilter = ["all", occupied, sparse];
         sparseFill = 0.14;
       } else {
         fillColor = scaleFill;
         fillFilter = occupied;
-        fillOpacity = 0.84;
+        fillOpacity = HEX_FILL_OP;
         sparseFilter = HIDDEN_FILTER;
         sparseFill = 0;
       }
     } else if (mode === "users") {
       fillColor = ["case", sparse, PARCHMENT, matchMeeple(ci)] as maplibregl.ExpressionSpecification;
       fillFilter = ["all", occupied, hit];
-      fillOpacity = 0.84;
+      fillOpacity = HEX_FILL_OP;
       sparseColor = PARCHMENT;
       sparseFilter = ["all", occupied, sparse, missed];
       sparseFill = 0.05;
@@ -473,7 +475,7 @@ export async function createMap(
     } else {
       fillColor = scaleFill;
       fillFilter = ["all", occupied, hit];
-      fillOpacity = 0.9;
+      fillOpacity = HEX_FILL_OP;
       sparseColor = DIM_GRAY;
       sparseFilter = ["all", occupied, sparse, missed];
       sparseFill = 0.05;
@@ -697,16 +699,6 @@ export async function createMap(
     });
   };
 
-  let frontRaf = 0;
-  const onFrontZoom = () => {
-    if (!hasFronts()) return;
-    if (frontRaf) return;
-    frontRaf = requestAnimationFrame(() => {
-      frontRaf = 0;
-      syncFrontsToCamera();
-    });
-  };
-
   const h3FillPaint = (
     color: string | maplibregl.ExpressionSpecification,
     opacity: number,
@@ -726,7 +718,7 @@ export async function createMap(
         source: "h3",
         "source-layer": "h3",
         filter: ["!=", ["get", "a_sp"], 1],
-        paint: h3FillPaint(matchMeeple("a_ci"), 0.72),
+        paint: h3FillPaint(matchMeeple("a_ci"), HEX_FILL_OP),
       },
       before,
     );
@@ -1060,12 +1052,14 @@ export async function createMap(
   map.on("moveend", onMove);
   map.on("zoom", () => {
     onPatternZoom();
-    onFrontZoom();
+    syncFrontsToCamera();
   });
   map.on("zoomend", () => {
     if (highlightUids.length) syncDotPatterns();
     syncFrontsToCamera();
   });
+  // Catch frames where the camera moved without a zoom event (or setData lagged).
+  map.on("render", syncFrontsToCamera);
 
   const replaceH3Source = (url: string) => {
     const selLayers = ["h3-line-sel", "h3-line-sel-halo"];

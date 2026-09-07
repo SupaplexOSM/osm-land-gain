@@ -29,13 +29,32 @@ jobs:
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
-      - name: Install osmium-tool
-        run: sudo apt-get update && sudo apt-get install -y osmium-tool
-
       - name: Install Python dependencies
         run: pip install -r pipeline/requirements.txt
 
+      - name: Detect quarter snapshot day
+        id: cal
+        run: |
+          python - <<'PY'
+          from datetime import date
+          import os
+
+          from pipeline.snapshots import is_quarter_date
+
+          today = date.today()
+          quarter = "true" if is_quarter_date(today) else "false"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"quarter={quarter}\n")
+              out.write(f"today={today.isoformat()}\n")
+          print(f"Heute {today.isoformat()} Quartalstag={quarter}")
+          PY
+
+      - name: Install osmium-tool
+        if: steps.cal.outputs.quarter == 'true'
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+
       - name: Run analysis pipeline
+        if: steps.cal.outputs.quarter == 'true'
         env:
           OSM_USER: ${{ secrets.OSM_USER }}
           OSM_PASSWORD: ${{ secrets.OSM_PASSWORD }}
@@ -44,9 +63,18 @@ jobs:
             echo "Repository-Secrets OSM_USER und OSM_PASSWORD fehlen." >&2
             exit 1
           fi
-          SNAPSHOT=$(python -c "from pipeline.snapshots import snapshot_date_for_run; print(snapshot_date_for_run().isoformat())")
-          echo "Stichtag $SNAPSHOT"
+          SNAPSHOT="${{ steps.cal.outputs.today }}"
+          echo "Stichtag $SNAPSHOT (neuer Snapshot)"
           python -m pipeline.run --profile prod --download --snapshot "$SNAPSHOT" --out web/public/data
+
+      - name: Upgrade restored snapshots
+        if: steps.cal.outputs.quarter != 'true'
+        run: |
+          if ! ls web/public/data/*/cells.json >/dev/null 2>&1; then
+            echo "Keine Snapshots nach Restore von gh-pages." >&2
+            exit 1
+          fi
+          python -m pipeline.run --upgrade --out web/public/data
 
       - uses: actions/setup-node@v6
         with:

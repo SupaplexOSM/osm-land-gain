@@ -41,6 +41,8 @@ npm run dev
 
 Die Pipeline schreibt je Stichtag nach `web/public/data/YYYY-MM-DD/` und dazu `web/public/data/snapshots.json`. PBFs liegen unter `pipeline/_cache/` und werden nicht committet.
 
+Zusätzlich lädt die Auswertung einmal pro Lauf den Notes-Dump (`planet-notes-latest.osn.bz2`, ca. 420 MB) und streamt den Changeset-Dump (`changesets-latest.osm.bz2`, ca. 8 GB, nicht auf die Platte). Daraus entstehen die Filter Notes und StreetComplete. Beides liegt auf planet.openstreetmap.org, ohne Editing-API. Lokal bleiben die Dateien im Cache; `--skip-planet` überspringt sie, `--refresh-planet` holt sie neu.
+
 Damit die Karte schnell erscheint, ist ein Stichtag auf mehrere Dateien verteilt. Auf dem kritischen Pfad liegen nur die ersten fünf: rund 1,3 MB fest plus die Kacheln des sichtbaren Ausschnitts. Alles Weitere wird nachgeladen und hält nichts auf.
 
 | Datei | Inhalt |
@@ -78,21 +80,21 @@ Jeweils am **21. März, 21. Juni, 21. September und 21. Dezember** (12:00 UTC) b
 
 Maximal **12 Snapshots** (drei Jahre). Ältere fallen weg. Das Archiv liegt auf `gh-pages`; die Action holt bestehende Ordner vor dem Deploy zurück.
 
-Manueller Action-Lauf (`workflow_dispatch`) rechnet den letzten Quartalsstichtag neu, legt keinen Extra-Stand an.
+Manueller Action-Lauf (`workflow_dispatch`) an einem anderen Tag published nur die vorhandenen Stände (Format-Upgrade, kein Geofabrik-Download). Ein neuer Snapshot entsteht nur am 21. März, 21. Juni, 21. September oder 21. Dezember.
 
 Die GitHub-Page kommt vom Branch `gh-pages`. Workflow: *Update OSM Land Gain*.
 
 ## Methodik (Kurz)
 
 - Letzter Bearbeiter jedes aktuellen OSM-Objekts (Snapshot): getaggte Nodes, Linien-Ways, Flächen (geschlossene Ways und Multipolygone mit u. a. building/landuse). Keine Routenrelationen.
-- Objekt zählt in allen geschnittenen H3-9-Zellen.
-- Index: Anzahl × Altersgewicht (&lt;1 Jahr = 1,0 … ≥5 Jahre = 0,05), plus Nachbar-Glättung (Ring 1–2) und Majority-Filter gegen Einzelfelder. Gewichte gelten relativ zum **Stichtag** des Datenstands.
-- Filter: alle Features, Straßen (`highway=*`), Gebäude (`building=*`), Landschaft (`landuse`/`natural`/`landcover`/`water`/`waterway` sowie Parks), Einrichtungen (Läden, Gastronomie, Bildung, Hotels …) und Stadtmöbel (Bänke, Laternen, Parkplätze …).
+- Objekt zählt in allen geschnittenen H3-9-Zellen; der Score wird durch die Zahl der berührten Zellen geteilt (1/n).
+- Index: Summe der Altersgewichte (≤6 Monate = 1,0, danach logistische S-Kurve gegen 0), plus Nachbar-Glättung (Ring 1–2) und Majority-Filter gegen Einzelfelder. Gewichte gelten relativ zum **Stichtag** des Datenstands.
+- Filter: alle OSM-Objekte (ohne Notes; StreetComplete-Edits sind enthalten), Straßen (`highway=*`), Gebäude (`building=*` und `building:part=*`), Landschaft (`landuse`/`natural`/`landcover`/`water`/`waterway` sowie Parks), Einrichtungen (Läden, Gastronomie, Bildung, Hotels …), Stadtmöbel (Bänke, Laternen, Haltestellen …, ohne Parkplätze), erledigte Notes (letzter Schließer am Stichtag, nicht selbst geöffnete Notes) und StreetComplete (letzter Editor am Stichtag, inkl. StreetComplete_ee).
 - Fähnchen: lokales Maximum eines Usergebiets (≥ 3 Zellen, Peak ≥ 50 % des persönlichen Maximums).
 - Krone: Aktivitätszentrum der 10 User mit der höchsten Indexsumme.
 - Gegenwärtig aktiv: letzte Berührung im Ausschnitt vor weniger als 40 Tagen (ebenfalls relativ zum Stichtag).
 - Leere Felder ohne Objekte im Filter bleiben ungefärbt; schwach kartierte Felder mit Objekten: leichte Schraffur, ohne Fähnchen.
-- Gebietsgrenzen: Zähne (Haifischzahnlinie) markieren Verschiebungen gegenüber dem vorherigen Quartalsstand; die Größe entspricht etwa 1, 2 oder mehr Hexfeldern. Neue Inselgebiete ohne Vorgänger richten sich nach ihrer Breite bzw. Höhe. Der älteste Stand hat keine Zähne.
+- Gebietsgrenzen: Zähne (Haifischzahnlinie) markieren Verschiebungen gegenüber dem vorherigen Quartalsstand; die Größe entspricht etwa 1, 2 oder mehr Hexfeldern. Neue Inselgebiete ohne Vorgänger richten sich nach der halben Breite bzw. Höhe (Ausdehnung nach beiden Seiten). Der älteste Stand hat keine Zähne.
 
 ## Lizenzhinweis
 

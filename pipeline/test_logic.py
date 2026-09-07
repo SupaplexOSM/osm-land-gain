@@ -1,7 +1,8 @@
 """Unit tests for age weights and stable user colors (no PBF required)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+import math
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -9,14 +10,71 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.config import Config, SPARSE_COUNT, filters_for_tags
 from pipeline.export import unique_hex_edges
 from pipeline.territories import sparse_threshold
-from pipeline.weights import age_weight, user_color_index
+from pipeline.weights import age_weight, age_weight_years, user_color_index
 
 
 def test_age_weight() -> None:
-    today = datetime(2026, 8, 26).date()
+    assert age_weight_years(0.25) == 1.0
+    assert age_weight_years(0.5) == 1.0
+    just_after = age_weight_years(0.5 + 1e-9)
+    assert 0.97 < just_after < 1.0
+    assert math.isclose(age_weight_years(1.5), 0.85)
+    assert math.isclose(age_weight_years(2.5), 17 / 32)
+    assert math.isclose(age_weight_years(3.5), 17 / 80)
+    assert age_weight_years(8.0) < 0.05
+    assert age_weight_years(8.0) > 0
+
+    today = date(2026, 8, 26)
     assert age_weight(datetime(2026, 3, 1), today) == 1.0
-    assert age_weight(datetime(2024, 10, 1), today) == 0.8
-    assert age_weight(datetime(2018, 1, 1), today) == 0.05
+    later = date(2027, 8, 26)
+    earlier = datetime(2025, 8, 26)
+    assert age_weight(earlier, today) == age_weight(datetime(2026, 8, 26), later)
+
+
+def test_credit_cells_recent() -> None:
+    from collections import defaultdict
+
+    from pipeline.extract import UserIndex, credit_cells
+
+    acc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0, 0.0])))
+    users = UserIndex()
+    today = date(2026, 6, 21)
+    stamps = (
+        datetime(2026, 4, 1),
+        datetime(2025, 10, 1),
+        datetime(2023, 1, 1),
+        datetime(2020, 1, 1),
+    )
+    for ts in stamps:
+        credit_cells(acc, users, ("cell",), ("all",), "ann", ts, today)
+    rec = acc["cell"]["all"][users.uid("ann")]
+    weights = [age_weight(ts, today) for ts in stamps]
+    recent = [w for ts, w in zip(stamps, weights) if (today - ts.date()).days <= 365]
+    assert rec[0] == 4
+    assert math.isclose(rec[4], float(len(recent)))
+    assert math.isclose(rec[5], sum(recent))
+    assert math.isclose(rec[1], sum(weights))
+    assert math.isclose(rec[6], sum(weights))
+
+
+def test_credit_cells_share() -> None:
+    from collections import defaultdict
+
+    from pipeline.extract import UserIndex, credit_cells
+
+    acc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0] * 7)))
+    users = UserIndex()
+    today = date(2026, 6, 21)
+    cells = ("a", "b", "c", "d")
+    credit_cells(acc, users, cells, ("all",), "ann", datetime(2026, 4, 1), today)
+    uid = users.uid("ann")
+    scores = [acc[cell]["all"][uid][1] for cell in cells]
+    full = [acc[cell]["all"][uid][6] for cell in cells]
+    assert all(acc[cell]["all"][uid][0] == 1 for cell in cells)
+    assert all(math.isclose(s, 0.25) for s in scores)
+    assert math.isclose(sum(scores), 1.0)
+    assert all(math.isclose(w, 1.0) for w in full)
+    assert all(math.isclose(w / 1.0, 1.0) for w in full)
 
 
 def test_color_stable() -> None:
@@ -33,6 +91,8 @@ def test_color_independent_of_filter() -> None:
     assert sparse_threshold(cfg, "landuse") == SPARSE_COUNT["landuse"]
     assert sparse_threshold(cfg, "place") == 3
     assert sparse_threshold(cfg, "furniture") == 4
+    assert sparse_threshold(cfg, "notes") == 2
+    assert sparse_threshold(cfg, "streetcomplete") == 4
     assert cfg.palette_size == 128
     assert user_color_index("alice", 128) < 128
 
@@ -51,10 +111,16 @@ def test_landscape_and_poi_filters() -> None:
     assert "place" not in filters_for_tags({"natural": "tree"})
     assert "place" in filters_for_tags({"tourism": "museum"})
     assert "place" not in filters_for_tags({"tourism": "viewpoint"})
+    assert "building" in filters_for_tags({"building": "yes"})
+    assert "building" in filters_for_tags({"building:part": "yes"})
+    assert "building" not in filters_for_tags({"highway": "residential"})
     assert "furniture" in filters_for_tags({"amenity": "bench"})
     assert "furniture" in filters_for_tags({"amenity": "waste_basket"})
     assert "furniture" in filters_for_tags({"highway": "street_lamp"})
-    assert "furniture" in filters_for_tags({"amenity": "parking"})
+    assert "furniture" in filters_for_tags({"amenity": "bicycle_parking"})
+    assert "furniture" not in filters_for_tags({"amenity": "parking"})
+    assert "furniture" not in filters_for_tags({"amenity": "parking_space"})
+    assert "furniture" not in filters_for_tags({"amenity": "parking_entrance"})
     assert "furniture" in filters_for_tags({"tourism": "information"})
     assert "furniture" not in filters_for_tags({"shop": "bakery"})
     assert "furniture" not in filters_for_tags({"amenity": "cafe"})
@@ -186,7 +252,11 @@ def test_season_labels() -> None:
     assert snapshot_entry(date(2026, 12, 21))["label"] == "Datenstand: Winter 2026"
     assert snapshot_entry(date(2025, 12, 21))["short"] == "Winter 2025"
     assert is_quarter_date(date(2026, 3, 21))
+    assert is_quarter_date(date(2026, 6, 21))
+    assert is_quarter_date(date(2026, 9, 21))
+    assert is_quarter_date(date(2026, 12, 21))
     assert not is_quarter_date(date(2026, 3, 1))
+    assert not is_quarter_date(date(2026, 9, 4))
     odd = snapshot_entry(date(2026, 8, 31))
     assert odd["season"] == ""
     assert "31.08.2026" in odd["label"]
@@ -411,8 +481,224 @@ def test_apply_cookie_parses_http_format() -> None:
     assert session.cookies.get("gf_download_oauth", domain=COOKIE_DOMAIN) == "login|2018-04-12|plain"
 
 
+def test_notes_and_sc_not_in_tag_filters() -> None:
+    from pipeline.config import FILTERS, THEME_FILTERS, filters_for_tags, in_bboxes
+    from pipeline.extract import object_filters
+
+    tags = {"highway": "residential", "building": "yes"}
+    found = filters_for_tags(tags)
+    assert "notes" not in found
+    assert "streetcomplete" not in found
+    assert found[0] == "all"
+    assert FILTERS[-2:] == ("notes", "streetcomplete")
+    assert "notes" not in THEME_FILTERS
+    assert "streetcomplete" not in THEME_FILTERS
+    assert "streetcomplete" in object_filters(tags, 42, {42})
+    assert "streetcomplete" not in object_filters(tags, 42, {99})
+    assert "all" in object_filters(tags, 42, {42})
+    assert in_bboxes(13.4, 52.52, ((13.0, 52.3, 13.8, 52.7),))
+    assert not in_bboxes(7.6, 47.6, ((13.0, 52.3, 13.8, 52.7),))
+
+
+def _note(ts: str, action: str, user: str = "bob", uid: str = "2") -> object:
+    from datetime import datetime, timezone
+
+    from pipeline.notes import NoteComment
+
+    return NoteComment(ts=datetime.fromisoformat(ts).replace(tzinfo=timezone.utc), action=action, user=user, uid=uid)
+
+
+def test_note_closer_at_snapshot() -> None:
+    from datetime import date
+
+    from pipeline.notes import closer_at_snapshot
+
+    snap = date(2024, 6, 21)
+    closed = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "ann", "1"), _note("2024-06-01T12:00:00", "closed")],
+        snap,
+    )
+    assert closed is not None and closed[0] == "bob"
+
+    reopened = closer_at_snapshot(
+        [
+            _note("2020-01-01T00:00:00", "opened", "ann", "1"),
+            _note("2024-01-01T00:00:00", "closed"),
+            _note("2024-03-01T00:00:00", "reopened", "ann", "1"),
+        ],
+        snap,
+    )
+    assert reopened is None
+
+    last_close = closer_at_snapshot(
+        [
+            _note("2020-01-01T00:00:00", "opened", "ann", "1"),
+            _note("2023-01-01T00:00:00", "closed", "ann", "1"),
+            _note("2024-05-01T00:00:00", "closed", "cara", "3"),
+        ],
+        snap,
+    )
+    assert last_close is not None and last_close[0] == "cara"
+
+    after = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "ann", "1"), _note("2024-07-01T00:00:00", "closed")],
+        snap,
+    )
+    assert after is None
+
+    hidden = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "ann", "1"), _note("2024-06-01T00:00:00", "hidden")],
+        snap,
+    )
+    assert hidden is None
+
+    anon = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "ann", "1"), _note("2024-06-01T00:00:00", "closed", "", "")],
+        snap,
+    )
+    assert anon is None
+
+    self_close = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "bob", "2"), _note("2024-06-01T00:00:00", "closed", "bob", "2")],
+        snap,
+    )
+    assert self_close is None
+
+    anon_open = closer_at_snapshot(
+        [_note("2020-01-01T00:00:00", "opened", "", ""), _note("2024-06-01T00:00:00", "closed", "bob", "2")],
+        snap,
+    )
+    assert anon_open is not None and anon_open[0] == "bob"
+
+
+def test_credit_closed_notes_from_xml() -> None:
+    from collections import defaultdict
+    from datetime import date
+    from io import BytesIO
+
+    from pipeline.config import Config
+    from pipeline.extract import UserIndex
+    from pipeline.notes import credit_closed_notes
+
+    xml = b"""<?xml version="1.0"?>
+<osm-notes>
+  <note id="1" lat="52.52" lon="13.40">
+    <comment action="opened" timestamp="2020-01-01T00:00:00Z" uid="1" user="ann"/>
+    <comment action="closed" timestamp="2024-06-01T00:00:00Z" uid="2" user="bob"/>
+  </note>
+  <note id="2" lat="52.52" lon="13.40">
+    <comment action="opened" timestamp="2020-01-01T00:00:00Z" uid="1" user="ann"/>
+    <comment action="closed" timestamp="2024-01-01T00:00:00Z" uid="2" user="bob"/>
+    <comment action="reopened" timestamp="2024-03-01T00:00:00Z" uid="1" user="ann"/>
+  </note>
+  <note id="4" lat="52.52" lon="13.40">
+    <comment action="opened" timestamp="2020-01-01T00:00:00Z" uid="2" user="bob"/>
+    <comment action="closed" timestamp="2024-06-01T00:00:00Z" uid="2" user="bob"/>
+  </note>
+  <note id="3" lat="47.6" lon="7.6">
+    <comment action="opened" timestamp="2020-01-01T00:00:00Z" uid="1" user="ann"/>
+    <comment action="closed" timestamp="2024-06-01T00:00:00Z" uid="9" user="outside"/>
+  </note>
+</osm-notes>
+"""
+    acc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])))
+    users = UserIndex()
+    n = credit_closed_notes(BytesIO(xml), date(2024, 6, 21), Config(), acc, users)
+    assert n == 1
+    assert users.names[1] == "bob"
+    notes_cells = [cell for cell, by_f in acc.items() if "notes" in by_f]
+    assert len(notes_cells) == 1
+    rec = next(iter(acc[notes_cells[0]]["notes"].values()))
+    assert rec[0] == 1
+
+
+def test_streetcomplete_changeset_parse_and_ids() -> None:
+    import tempfile
+    from io import BytesIO
+    from pathlib import Path
+
+    from pipeline.changesets import (
+        is_streetcomplete_created_by,
+        load_changeset_ids,
+        parse_streetcomplete_changesets,
+        save_changeset_ids,
+    )
+
+    assert is_streetcomplete_created_by("StreetComplete 58.2")
+    assert is_streetcomplete_created_by("StreetComplete_ee 57.0")
+    assert not is_streetcomplete_created_by("iD 2.0")
+    assert not is_streetcomplete_created_by("JOSM")
+
+    xml = b"""<?xml version="1.0"?>
+<osm>
+  <changeset id="10" created_at="2024-01-01T00:00:00Z">
+    <tag k="created_by" v="iD 2.29.0"/>
+  </changeset>
+  <changeset id="11" created_at="2024-01-01T00:00:00Z">
+    <tag k="comment" v="fix"/>
+    <tag k="created_by" v="StreetComplete 50.0"/>
+  </changeset>
+  <changeset id="12" created_at="2024-01-01T00:00:00Z">
+    <tag k="created_by" v="StreetComplete_ee 1.0"/>
+  </changeset>
+</osm>
+"""
+    ids = parse_streetcomplete_changesets(BytesIO(xml))
+    assert ids == {11, 12}
+
+    with tempfile.TemporaryDirectory() as raw:
+        path = Path(raw) / "sc.bin.gz"
+        save_changeset_ids(path, ids)
+        assert load_changeset_ids(path) == ids
+
+
+def test_legacy_six_filter_cells_bin() -> None:
+    import tempfile
+
+    import h3
+
+    import pipeline.binpack as binpack
+    from pipeline.binpack import read_cell_records, write_cell_binaries
+    from pipeline.config import FILTERS
+
+    cell = h3.latlng_to_cell(52.52, 13.4, 9)
+    empty = {"w": 0, "s": 0, "c": 0, "n": 0, "f": 0, "k": 0, "sp": 1, "ci": 0, "u": []}
+    filled = {"w": 1, "s": 2.0, "c": 1.0, "n": 3, "f": 10, "k": 0, "sp": 0, "ci": 4, "u": [[1, 2.0, 1700006400]]}
+    old = binpack.FILTERS
+    try:
+        binpack.FILTERS = old[:6]
+        records = {cell: {filt: dict(filled) if filt == "all" else dict(empty) for filt in binpack.FILTERS}}
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw)
+            write_cell_binaries(out, records, {1: {"name": "alice"}})
+            binpack.FILTERS = old
+            back = read_cell_records(out)
+    finally:
+        binpack.FILTERS = old
+
+    assert back is not None
+    assert back[cell]["all"]["w"] == 1
+    assert back[cell]["notes"]["n"] == 0
+    assert back[cell]["streetcomplete"]["sp"] == 1
+    assert set(back[cell]) == set(FILTERS)
+
+
+def test_concatenated_bz2_stream() -> None:
+    import bz2
+
+    from pipeline.planet import HttpBz2Reader
+
+    class FakeResp:
+        def iter_content(self, chunk_size: int = 1):
+            yield bz2.compress(b"<a>1</a>") + bz2.compress(b"<b>2</b>")
+
+    assert HttpBz2Reader(FakeResp()).read(-1) == b"<a>1</a><b>2</b>"
+
+
 if __name__ == "__main__":
     test_age_weight()
+    test_credit_cells_recent()
+    test_credit_cells_share()
     test_color_stable()
     test_color_independent_of_filter()
     test_landscape_and_poi_filters()
@@ -431,4 +717,10 @@ if __name__ == "__main__":
     test_parse_dates()
     test_profile_bboxes()
     test_apply_cookie_parses_http_format()
+    test_notes_and_sc_not_in_tag_filters()
+    test_note_closer_at_snapshot()
+    test_credit_closed_notes_from_xml()
+    test_streetcomplete_changeset_parse_and_ids()
+    test_legacy_six_filter_cells_bin()
+    test_concatenated_bz2_stream()
     print("weights ok")

@@ -174,9 +174,11 @@ def records_from_cells_json(path: Path) -> dict[str, FilterCell]:
                 rec.setdefault(filt, dict(EMPTY_ROW))
             records[cell] = rec
         else:
-            records[cell] = {
-                filt: dict(zip(PACKED_KEYS, packed[filt], strict=True)) for filt in FILTERS
-            }
+            rec = {}
+            for filt in FILTERS:
+                row = packed.get(filt) if isinstance(packed, dict) else None
+                rec[filt] = dict(zip(PACKED_KEYS, row, strict=True)) if row else dict(EMPTY_ROW)
+            records[cell] = rec
     return records
 
 
@@ -246,7 +248,7 @@ def _tile_props(rec: FilterCell) -> dict:
     props: dict = {}
     for filt in FILTERS:
         p = FILTER_PREFIX[filt]
-        row = rec[filt]
+        row = rec.get(filt) or EMPTY_ROW
         props[f"{p}_w"] = int(row["w"])
         props[f"{p}_s"] = int(round(row["s"] * 10))
         props[f"{p}_c"] = int(round(row["c"] * 100))

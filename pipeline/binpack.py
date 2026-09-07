@@ -203,6 +203,9 @@ def read_cell_records(snap_dir: Path) -> dict[str, FilterCell] | None:
     for ci, cell in enumerate(cells):
         by_filter: FilterCell = {}
         for fi, filt in enumerate(FILTERS):
+            if fi >= n_filters:
+                by_filter[filt] = dict(EMPTY_ROW)
+                continue
             slot = ci * n_filters + fi
             lo = row_start[slot]
             hi = row_start[slot + 1]

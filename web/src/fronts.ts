@@ -36,25 +36,15 @@ export const EMPTY_FRONTS: OverlayCollection = { type: "FeatureCollection", feat
 export const FRONT_REF_ZOOM = 12;
 /** Pixel growth exponent past ref zoom: 1 = with the map, 0 = frozen. */
 const TOOTH_ZOOM_GROWTH = 0.4;
-const TOOTH_COUNT_CAP = 48;
 
-/** Size 2/3 match the former 1/2 visuals, then shortened; size 1 is the small step.
- *  Height steps ~0.14 / 0.23 / 0.32. Pointy bases (height/base ≈ 1.65).
- *  Tooth count 5 / 4 / 3 so larger teeth sit in fewer, still tight slots. */
-const TOOTH_HEIGHT = [0, 0.14, 0.23, 0.32] as const;
-const TOOTH_BASE = [0, 0.085, 0.14, 0.195] as const;
-const TOOTH_COUNT = [0, 5, 4, 3] as const;
+/** Height 0.22 / 0.27 / 0.32. Pointy bases (height/base ≈ 1.65). Count 4 / 3 / 3. */
+const TOOTH_HEIGHT = [0, 0.22, 0.27, 0.32] as const;
+const TOOTH_BASE = [0, 0.133, 0.164, 0.194] as const;
+const TOOTH_COUNT = [0, 4, 3, 3] as const;
 
 export function toothZoomScale(zoom: number): number {
   const dz = Math.max(0, zoom - FRONT_REF_ZOOM);
   return 2 ** ((TOOTH_ZOOM_GROWTH - 1) * dz);
-}
-
-function toothCountForZoom(depth: 1 | 2 | 3, zoom: number): number {
-  const base = TOOTH_COUNT[depth];
-  const dz = Math.max(0, zoom - FRONT_REF_ZOOM);
-  const n = base * 2 ** ((1 - TOOTH_ZOOM_GROWTH) * dz);
-  return Math.max(base, Math.min(TOOTH_COUNT_CAP, Math.round(n)));
 }
 
 function isPackedSegment(value: unknown): value is PackedSegment {
@@ -129,7 +119,7 @@ export function frontTeethGeoJSON(segments: FrontSegment[], zoom: number): Overl
   const scale = toothZoomScale(zoom);
   const features: Feature[] = [];
   for (const seg of segments) {
-    const n = toothCountForZoom(seg.depth, zoom);
+    const n = TOOTH_COUNT[seg.depth];
     const height = seg.edgeLen * TOOTH_HEIGHT[seg.depth] * scale;
     const half = (seg.edgeLen * TOOTH_BASE[seg.depth] * scale) / 2;
     for (let i = 0; i < n; i++) {

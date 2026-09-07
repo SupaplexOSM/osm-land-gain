@@ -6,7 +6,7 @@ from collections import Counter, defaultdict, deque
 
 import h3
 
-from .config import FILTERS, Config
+from .config import FILTERS, THEME_FILTERS, Config
 from .extract import CellAcc, UserIndex
 from .weights import user_color_index
 
@@ -190,7 +190,9 @@ def assemble_cell_records(
             "name": users.names[uid],
             "scores": {f: 0.0 for f in FILTERS},
             "last_ts": 0,
-            "specialties": {f: 0.0 for f in FILTERS if f != "all"},
+            "edits_recent": 0,
+            "score_recent": 0.0,
+            "specialties": {f: 0.0 for f in THEME_FILTERS},
         }
         for uid in range(1, len(users.names))
     }
@@ -206,9 +208,9 @@ def assemble_cell_records(
         for cell in all_cells:
             raw = data.get(cell, {})
             count = int(sum(v[0] for v in raw.values()))
-            weight_sum = float(sum(v[1] for v in raw.values()))
+            full_weight = float(sum((v[6] if len(v) > 6 else v[1]) for v in raw.values()))
             age_sum = float(sum((v[3] if len(v) > 3 else 0.0) for v in raw.values()))
-            currentness = (weight_sum / count) if count else 0.0
+            currentness = (full_weight / count) if count else 0.0
             mean_age = int(round(age_sum / count)) if count else 0
             sparse = count <= limit
             uid = 0 if sparse else winners.get(cell, 0)
@@ -245,7 +247,10 @@ def assemble_cell_records(
                 st["scores"][filt] += vals[1]
                 if vals[2] > st["last_ts"]:
                     st["last_ts"] = int(vals[2])
-                if filt != "all":
+                if filt == "all":
+                    st["edits_recent"] += float(vals[4] if len(vals) > 4 else 0.0)
+                    st["score_recent"] += float(vals[5] if len(vals) > 5 else 0.0)
+                if filt in THEME_FILTERS:
                     st["specialties"][filt] += vals[1]
 
     for st in user_stats.values():
@@ -255,6 +260,8 @@ def assemble_cell_records(
                 k: round(v / spec_sum, 4) for k, v in st["specialties"].items()
             }
         st["scores"] = {k: round(v, 3) for k, v in st["scores"].items()}
+        st["edits_recent"] = round(float(st["edits_recent"]), 3)
+        st["score_recent"] = round(float(st["score_recent"]), 3)
 
     return records, user_stats, centers_out
 

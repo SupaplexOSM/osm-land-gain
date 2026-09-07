@@ -1,6 +1,9 @@
-export const FILTERS = ["all", "highway", "building", "landuse", "place", "furniture"] as const;
+export const FILTERS = ["all", "highway", "building", "landuse", "place", "furniture", "notes", "streetcomplete"] as const;
 export type FilterId = (typeof FILTERS)[number];
 export type ViewMode = "users" | "currentness" | "features";
+
+export const THEME_FILTERS = ["highway", "building", "landuse", "place", "furniture"] as const;
+export type ThemeFilterId = (typeof THEME_FILTERS)[number];
 
 export const FILTER_PREFIX: Record<FilterId, string> = {
   all: "a",
@@ -9,6 +12,8 @@ export const FILTER_PREFIX: Record<FilterId, string> = {
   landuse: "l",
   place: "p",
   furniture: "f",
+  notes: "nt",
+  streetcomplete: "sc",
 };
 
 export const FILTER_LABELS: Record<FilterId, string> = {
@@ -18,9 +23,11 @@ export const FILTER_LABELS: Record<FilterId, string> = {
   landuse: "Landschaft",
   place: "Einrichtungen",
   furniture: "Stadtmöbel",
+  notes: "Notes",
+  streetcomplete: "StreetComplete",
 };
 
-export const SPECIALTY_LABELS: Record<Exclude<FilterId, "all">, string> = {
+export const SPECIALTY_LABELS: Record<ThemeFilterId, string> = {
   highway: "Straßen",
   building: "Gebäude",
   landuse: "Landschaft",
@@ -28,7 +35,7 @@ export const SPECIALTY_LABELS: Record<Exclude<FilterId, "all">, string> = {
   furniture: "Stadtmöbel",
 };
 
-export const SPECIALTY_COLORS: Record<Exclude<FilterId, "all">, string> = {
+export const SPECIALTY_COLORS: Record<ThemeFilterId, string> = {
   highway: "#2563eb",
   building: "#c2410c",
   landuse: "#16a34a",
@@ -37,15 +44,19 @@ export const SPECIALTY_COLORS: Record<Exclude<FilterId, "all">, string> = {
 };
 
 export const FILTER_TIPS: Record<FilterId, string> = {
-  all: "Alle OSM-Objekte mit letztem Bearbeiter, unabhängig vom Tag.",
+  all: "Alle OSM-Objekte (ohne Notes; es zählt die Mapper:in, die ein Objekt zuletzt bearbeitet hat).",
   highway: "Linien mit highway=* (Straßen, Wege, Pfade).",
-  building: "Gebäudeflächen mit building=*.",
+  building: "Gebäudeflächen mit building=* oder building:part=*.",
   landuse:
-    "Landschaft: landuse, natural (auch Bäume), landcover, water, waterway sowie Parks und ähnliche Grünflächen (leisure=park/garden/nature_reserve …).",
+    "Landschaft: landuse, natural (auch Bäume), landcover, water, waterway sowie Parks und ähnliche Grünflächen.",
   place:
-    "Betretbare Einrichtungen: Läden, Gastronomie, Büros, Gesundheit, Bildung, Hotels, Museen, Sportstätten, Toiletten. Ohne Bänke, Mülleimer und Parkplätze.",
+    "Betretbare Einrichtungen: Läden, Gastronomie, Büros, Gesundheit, Bildung, Hotels, Museen, Sportstätten, Toiletten.",
   furniture:
-    "Öffentliche Ausstattung im Freien: Bänke, Mülleimer, Laternen, Hydranten, Infotafeln, Denkmäler, Parkplätze, Haltestellen, Automaten.",
+    "Öffentliche Ausstattung im Freien: Bänke, Mülleimer, Laternen, Hydranten, Infotafeln, Denkmäler, Haltestellen, Automaten.",
+  notes:
+    "Erledigte OSM-Hinweise: Wer schließt Notes des OSM-Hinweissystems? (Es zählen nur Hinweise, die später nicht wieder geöffnet wurden und nicht vom schließenden User selbst erstellt wurden.)",
+  streetcomplete:
+    "OSM-Objekte, deren letzte Bearbeitung mit StreetComplete (inkl. SCEE) erfolgte.",
 };
 
 export interface ActivityCenter {
@@ -92,7 +103,11 @@ export interface UserStat {
   name: string;
   scores: Record<FilterId, number>;
   last_ts: number;
-  specialties: Record<Exclude<FilterId, "all">, number>;
+  specialties: Record<ThemeFilterId, number>;
+  /** Last-editor objects in filter all with age ≤ 365 days. Missing on older snapshots. */
+  edits_recent?: number;
+  /** Weighted score of those recent objects. Missing on older snapshots. */
+  score_recent?: number;
 }
 
 /** Per-cell numbers, read straight from the vector tile feature. */
