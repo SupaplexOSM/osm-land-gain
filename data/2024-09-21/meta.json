@@ -1,0 +1,77 @@
+{
+  "generated": "2024-09-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    7.5274,
+    47.5267,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ],
+    [
+      7.5274,
+      47.5267,
+      7.8302,
+      47.7026
+    ]
+  ],
+  "max_score": {
+    "all": 1325.171,
+    "highway": 220.396,
+    "building": 275.513,
+    "landuse": 571.273,
+    "place": 86.509,
+    "furniture": 198.411,
+    "notes": 19.182,
+    "streetcomplete": 302.767
+  },
+  "max_count": {
+    "all": 3319,
+    "highway": 685,
+    "building": 2646,
+    "landuse": 606,
+    "place": 230,
+    "furniture": 371,
+    "notes": 115,
+    "streetcomplete": 595
+  },
+  "id": "2024-09-21",
+  "date": "2024-09-21",
+  "season": "herbst",
+  "short": "Herbst 2024",
+  "label": "Datenstand: Herbst 2024",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2024"
+}

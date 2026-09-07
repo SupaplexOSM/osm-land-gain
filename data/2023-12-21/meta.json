@@ -1,0 +1,77 @@
+{
+  "generated": "2023-12-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    7.5274,
+    47.5267,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ],
+    [
+      7.5274,
+      47.5267,
+      7.8302,
+      47.7026
+    ]
+  ],
+  "max_score": {
+    "all": 1409.0,
+    "highway": 293.844,
+    "building": 569.276,
+    "landuse": 591.333,
+    "place": 94.973,
+    "furniture": 173.815,
+    "notes": 22.287,
+    "streetcomplete": 357.415
+  },
+  "max_count": {
+    "all": 3291,
+    "highway": 680,
+    "building": 2647,
+    "landuse": 606,
+    "place": 234,
+    "furniture": 378,
+    "notes": 115,
+    "streetcomplete": 544
+  },
+  "id": "2023-12-21",
+  "date": "2023-12-21",
+  "season": "winter",
+  "short": "Winter 2023",
+  "label": "Datenstand: Winter 2023",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2023"
+}

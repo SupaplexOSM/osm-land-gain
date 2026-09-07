@@ -1,0 +1,100 @@
+{
+  "snapshots": [
+    {
+      "id": "2023-09-21",
+      "date": "2023-09-21",
+      "season": "herbst",
+      "short": "Herbst 2023",
+      "label": "Datenstand: Herbst 2023",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2023"
+    },
+    {
+      "id": "2023-12-21",
+      "date": "2023-12-21",
+      "season": "winter",
+      "short": "Winter 2023",
+      "label": "Datenstand: Winter 2023",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2023"
+    },
+    {
+      "id": "2024-03-21",
+      "date": "2024-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2024",
+      "label": "Datenstand: Frühling 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2023 bis 21. März 2024"
+    },
+    {
+      "id": "2024-06-21",
+      "date": "2024-06-21",
+      "season": "sommer",
+      "short": "Sommer 2024",
+      "label": "Datenstand: Sommer 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2024"
+    },
+    {
+      "id": "2024-09-21",
+      "date": "2024-09-21",
+      "season": "herbst",
+      "short": "Herbst 2024",
+      "label": "Datenstand: Herbst 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2024"
+    },
+    {
+      "id": "2024-12-21",
+      "date": "2024-12-21",
+      "season": "winter",
+      "short": "Winter 2024",
+      "label": "Datenstand: Winter 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2024"
+    },
+    {
+      "id": "2025-03-21",
+      "date": "2025-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2025",
+      "label": "Datenstand: Frühling 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2024 bis 21. März 2025"
+    },
+    {
+      "id": "2025-06-21",
+      "date": "2025-06-21",
+      "season": "sommer",
+      "short": "Sommer 2025",
+      "label": "Datenstand: Sommer 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2025"
+    },
+    {
+      "id": "2025-09-21",
+      "date": "2025-09-21",
+      "season": "herbst",
+      "short": "Herbst 2025",
+      "label": "Datenstand: Herbst 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2025"
+    },
+    {
+      "id": "2025-12-21",
+      "date": "2025-12-21",
+      "season": "winter",
+      "short": "Winter 2025",
+      "label": "Datenstand: Winter 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2025"
+    },
+    {
+      "id": "2026-03-21",
+      "date": "2026-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2026",
+      "label": "Datenstand: Frühling 2026",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2025 bis 21. März 2026"
+    },
+    {
+      "id": "2026-06-21",
+      "date": "2026-06-21",
+      "season": "sommer",
+      "short": "Sommer 2026",
+      "label": "Datenstand: Sommer 2026",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2026"
+    }
+  ]
+}

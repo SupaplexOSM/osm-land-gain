@@ -1,0 +1,77 @@
+{
+  "generated": "2026-03-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    7.5274,
+    47.5267,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ],
+    [
+      7.5274,
+      47.5267,
+      7.8302,
+      47.7026
+    ]
+  ],
+  "max_score": {
+    "all": 966.926,
+    "highway": 215.364,
+    "building": 231.627,
+    "landuse": 693.0,
+    "place": 137.169,
+    "furniture": 201.32,
+    "notes": 22.657,
+    "streetcomplete": 540.625
+  },
+  "max_count": {
+    "all": 3362,
+    "highway": 690,
+    "building": 2646,
+    "landuse": 765,
+    "place": 233,
+    "furniture": 411,
+    "notes": 115,
+    "streetcomplete": 653
+  },
+  "id": "2026-03-21",
+  "date": "2026-03-21",
+  "season": "fruehling",
+  "short": "Fr\u00fchling 2026",
+  "label": "Datenstand: Fr\u00fchling 2026",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2025 bis 21. M\u00e4rz 2026"
+}
