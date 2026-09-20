@@ -83,6 +83,8 @@ export interface SnapshotMeta {
   max_score: Partial<Record<FilterId, number>>;
   /** Highest object count in any cell, per filter. */
   max_count: Partial<Record<FilterId, number>>;
+  /** Highest encoded PMTiles zoom; the map overzooms past this. */
+  max_zoom?: number;
   label?: string;
   season?: string;
   id?: string;

@@ -11,7 +11,7 @@ function bboxContains(box: BBox4, lng: number, lat: number): boolean {
   return lng >= box[0] && lng <= box[2] && lat >= box[1] && lat <= box[3];
 }
 
-/** Nearby boxes stay together; distant ones (Berlin vs Lörrach) split. */
+/** Nearby boxes stay together; distant outliers would split. */
 export function clusterBboxes(bboxes: BBox4[], gap = 1.5): BBox4[][] {
   const clusters: BBox4[][] = [];
   for (const box of bboxes) {
@@ -33,7 +33,6 @@ export function regionLabel(bboxes: BBox4[]): string {
   const lats = bboxes.flatMap((b) => [b[1], b[3]]);
   const mid = (Math.min(...lats) + Math.max(...lats)) / 2;
   if (mid > 51) return "Berlin";
-  if (mid < 49) return "Lörrach";
   return "Gebiet";
 }
 

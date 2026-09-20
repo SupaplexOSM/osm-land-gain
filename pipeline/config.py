@@ -236,7 +236,6 @@ BBox = tuple[float, float, float, float]
 BERLIN_BBOX: BBox = (13.008, 52.325, 13.770, 52.687)
 # BBBike Berlin extract header — includes Brandenburg around the city.
 BBBIKE_BERLIN_BBOX: BBox = (12.76, 52.23, 13.98, 52.82)
-LOERRACH_BBOX: BBox = (7.5274, 47.5267, 7.8302, 47.7026)
 # Dev-Testausschnitt (west, south, east, north): inneres Berlin inkl. Tempelhof–Neukölln–Mitte.
 DEV_TEST_BBOXES: tuple[BBox, ...] = (
     (13.2753, 52.4382, 13.5005, 52.5519),
@@ -245,6 +244,10 @@ DEV_TEST_BBOXES: tuple[BBox, ...] = (
 MAX_SNAPSHOTS = 12
 SNAPSHOT_MONTHS = (3, 6, 9, 12)
 SNAPSHOT_DAY = 21
+# CI runs the day after the Geofabrik 21st extract is typically online.
+SNAPSHOT_PIPELINE_DAY = 22
+# All stored snapshots use this PMTiles maxzoom; the map overzooms past it.
+HISTORY_MAX_ZOOM = 12
 
 
 def union_bbox(bboxes: tuple[BBox, ...] | list[BBox]) -> BBox:
@@ -304,18 +307,6 @@ PROFILES: dict[str, Profile] = {
                 history_url=f"{GEOFABRIK_INTERNAL}/europe/germany/brandenburg-internal.osh.pbf",
                 bboxes=(BBBIKE_BERLIN_BBOX,),
             ),
-            Source(
-                id="freiburg-regbez",
-                latest_url=(
-                    f"{GEOFABRIK_INTERNAL}/europe/germany/baden-wuerttemberg/"
-                    "freiburg-regbez-latest-internal.osm.pbf"
-                ),
-                history_url=(
-                    f"{GEOFABRIK_INTERNAL}/europe/germany/baden-wuerttemberg/"
-                    "freiburg-regbez-internal.osh.pbf"
-                ),
-                bboxes=(LOERRACH_BBOX,),
-            ),
         ),
     ),
 }
@@ -342,7 +333,7 @@ class Config:
     # PMTiles: which zoom levels are encoded. The map may zoom in past
     # max_zoom (overzoom of the last tile level); camera min zoom is in map.ts.
     min_zoom: int = 10
-    max_zoom: int = 14
+    max_zoom: int = HISTORY_MAX_ZOOM
     palette_size: int = 128
     bboxes: tuple[BBox, ...] = DEV_TEST_BBOXES
     extra_area_keys: tuple[str, ...] = field(default_factory=lambda: AREA_KEYS)

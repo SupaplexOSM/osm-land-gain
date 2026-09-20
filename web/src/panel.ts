@@ -10,6 +10,7 @@ import {
   type RankedUser,
   type ViewportSummary,
 } from "./stats";
+import { OSM_ZOOM_FROM_MAPLIBRE } from "./permalink";
 import type { ActivityCenter, CellView, FilterId, UserStat, ViewMode } from "./types";
 import { FILTER_LABELS, SPECIALTY_COLORS, SPECIALTY_LABELS } from "./types";
 
@@ -142,8 +143,6 @@ function activityPhrase(value: number): string {
  * MapLibre:        Zoom 0 = die Welt ist 512 CSS-Pixel breit (Vektorkacheln).
  * Derselbe z-Wert ist in MapLibre daher eine Zoomstufe näher; +1 gleicht das aus.
  */
-const OSM_ZOOM_FROM_MAPLIBRE = 1;
-
 export function osmExtentUrl(center: { lng: number; lat: number }, zoom: number): string {
   const z = Math.max(0, Math.min(19, Math.round(zoom + OSM_ZOOM_FROM_MAPLIBRE)));
   return `https://www.openstreetmap.org/#map=${z}/${center.lat.toFixed(5)}/${center.lng.toFixed(5)}`;
@@ -291,16 +290,23 @@ export function renderViewportPanel(
       .join("") || placeholder(empty);
   const newcomers = rows.filter((u) => u.newcomer).slice(0, 10);
 
-  const highPct = Math.round(summary.highShare * 100).toLocaleString("de-DE");
-  const highShare = `${highPct} % der Gitterfelder mit (sehr) hoher Aktivität`;
+  const noun = countNoun(filter);
+  const highShare =
+    summary.highShare == null
+      ? `? % der Gitterfelder mit (sehr) hoher Aktivität`
+      : `${Math.round(summary.highShare * 100).toLocaleString("de-DE")} % der Gitterfelder mit (sehr) hoher Aktivität`;
   const mappers =
     summary.mappers == null
-      ? "Mapper:innen werden gezählt…"
+      ? "? Mapper:innen"
       : summary.mappers === 1
         ? "1 Mapper:in"
         : `${summary.mappers.toLocaleString("de-DE")} Mapper:innen`;
+  const objects =
+    summary.objects == null
+      ? `? ${noun}`
+      : `${summary.objects.toLocaleString("de-DE")} ${noun}`;
   el.innerHTML = `
-    <p class="summary">${mappers} · ${summary.objects.toLocaleString("de-DE")} ${countNoun(filter)} · <span class="tip" title="${escapeHtml(TIP.summary)}">${highShare}</span></p>
+    <p class="summary">${mappers} · ${objects} · <span class="tip" title="${escapeHtml(TIP.summary)}">${highShare}</span></p>
     <h3 class="viewport-list-head">${tip("Aktivste Mapper:innen im Kartenausschnitt", TIP.viewList)}<a class="osm-ext osm-extent" href="${escapeHtml(osmUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(TIP.osmExtent)}" aria-label="${escapeHtml(TIP.osmExtent)}"><img class="osm-logo" src="./osm-logo.svg" width="22" height="22" alt=""></a></h3>
     <ol class="rank fat">${list(top, "Keine Mapper:innen im Ausschnitt")}</ol>
     <h3 class="viewport-list-head viewport-newcomers-head">${tip("Newcomer im Kartenausschnitt", TIP.newcomers)}</h3>

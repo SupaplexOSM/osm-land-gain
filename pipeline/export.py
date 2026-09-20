@@ -124,6 +124,7 @@ def write_json_sidecars(
         "bboxes": [list(b) for b in cfg.bboxes],
         "max_score": max_score,
         "max_count": max_count,
+        "max_zoom": cfg.max_zoom,
     }
     if snapshot:
         meta.update(snapshot)

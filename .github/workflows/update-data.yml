@@ -2,7 +2,10 @@ name: Update OSM Land Gain
 
 on:
   schedule:
-    - cron: "0 12 21 3,6,9,12 *"
+    # 22 Mar/Dec 06:20 Europe/Berlin (CET = UTC+1)
+    - cron: "20 5 22 3,12 *"
+    # 22 Jun/Sep 06:20 Europe/Berlin (CEST = UTC+2)
+    - cron: "20 4 22 6,9 *"
   workflow_dispatch:
 
 permissions:
@@ -11,6 +14,7 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
 
@@ -22,6 +26,12 @@ jobs:
           git archive origin/gh-pages data | tar -x -C web/public
           echo "Vorhandene Snapshots:"
           ls -1 web/public/data || true
+          if [ -f web/public/data/_meta/streetcomplete-changesets.bin.gz ]; then
+            mkdir -p pipeline/_cache
+            cp web/public/data/_meta/streetcomplete-changesets.bin.gz \
+              pipeline/_cache/streetcomplete-changesets.bin.gz
+            echo "StreetComplete-IDs aus gh-pages übernommen."
+          fi
 
       - uses: actions/setup-python@v6
         with:
@@ -32,21 +42,23 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r pipeline/requirements.txt
 
-      - name: Detect quarter snapshot day
+      - name: Detect quarter pipeline day
         id: cal
         run: |
           python - <<'PY'
           from datetime import date
           import os
 
-          from pipeline.snapshots import is_quarter_date
+          from pipeline.snapshots import is_quarter_pipeline_day, snapshot_date_for_run
 
           today = date.today()
-          quarter = "true" if is_quarter_date(today) else "false"
+          quarter = "true" if is_quarter_pipeline_day(today) else "false"
+          snapshot = snapshot_date_for_run(today).isoformat()
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"quarter={quarter}\n")
               out.write(f"today={today.isoformat()}\n")
-          print(f"Heute {today.isoformat()} Quartalstag={quarter}")
+              out.write(f"snapshot={snapshot}\n")
+          print(f"Heute {today.isoformat()} Pipeline-Tag={quarter} Stichtag={snapshot}")
           PY
 
       - name: Install osmium-tool
@@ -63,8 +75,8 @@ jobs:
             echo "Repository-Secrets OSM_USER und OSM_PASSWORD fehlen." >&2
             exit 1
           fi
-          SNAPSHOT="${{ steps.cal.outputs.today }}"
-          echo "Stichtag $SNAPSHOT (neuer Snapshot)"
+          SNAPSHOT="${{ steps.cal.outputs.snapshot }}"
+          echo "Stichtag $SNAPSHOT (neuer Snapshot, Lauf ${{ steps.cal.outputs.today }})"
           python -m pipeline.run --profile prod --download --snapshot "$SNAPSHOT" --out web/public/data
 
       - name: Upgrade restored snapshots

@@ -118,7 +118,7 @@
                   </span>
                   <span>Aktivitätszentrum von Mapper:innen, die in dieser Gegend nicht die aktivsten Mapper:innen sind.</span>
                 </li>
-                <li>
+                <li id="lede-legend-fronts">
                   <span class="lede-legend-sym">
                     <svg class="lede-legend-teeth" viewBox="0 0 12 40" width="12" height="40" aria-hidden="true" focusable="false">
                       <path
@@ -165,11 +165,26 @@
           <div id="snapshot-slider-wrap" class="snapshot-slider hide" hidden>
             <div class="snapshot-head">
               <label for="snapshot-slider" id="snapshot-label"></label>
-              <span id="snapshot-count" class="snapshot-count"></span>
             </div>
             <div class="snapshot-range">
-              <input id="snapshot-slider" type="range" min="0" max="0" step="1" value="0" aria-labelledby="snapshot-label" />
-              <div id="snapshot-ticks" class="snapshot-ticks" aria-hidden="true"></div>
+              <button
+                type="button"
+                id="snapshot-nav-past"
+                class="snapshot-nav snapshot-nav-past"
+                title="Historische Jahresansicht"
+                aria-label="Historische Jahresansicht"
+              ></button>
+              <div class="snapshot-range-main">
+                <input id="snapshot-slider" type="range" min="0" max="0" step="1" value="0" aria-labelledby="snapshot-label" />
+                <div id="snapshot-ticks" class="snapshot-ticks" aria-hidden="true"></div>
+              </div>
+              <button
+                type="button"
+                id="snapshot-nav-present"
+                class="snapshot-nav snapshot-nav-present"
+                title="Quartale der letzten drei Jahre"
+                aria-label="Quartale der letzten drei Jahre"
+              ></button>
             </div>
           </div>
         </header>
@@ -237,6 +252,9 @@
       </aside>
       <div class="map-pane">
         <div id="map"></div>
+        <div id="map-loading" class="map-loading" hidden>
+          <div class="map-loading-spinner" role="status" aria-label="Datenstand wird geladen"></div>
+        </div>
         <div class="opacity-control">
           <label for="overlay-opacity">Deckkraft</label>
           <input id="overlay-opacity" type="range" min="0" max="100" value="100" step="1" dir="ltr" />

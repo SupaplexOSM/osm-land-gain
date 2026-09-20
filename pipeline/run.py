@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from .osm_prep import (
 )
 from .overlays import write_sidecars
 from .snapshots import (
+    history_tile_zoom,
     last_quarter_dates,
     list_snapshot_dirs,
     parse_dates,
@@ -45,14 +47,106 @@ from .territories import assemble_cell_records
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ROOT / "web" / "public" / "data"
 
+# Clipped history OSH paths, set while --history runs so missing prev quarters can be built ephemerally.
+_HISTORY_CLIPS: list[Path] | None = None
+_SC_IDS: set[int] | None = None
+_NOTES_PATH: Path | None = None
+
+
+def _assemble_from_pbf(
+    pbf: Path,
+    cfg: Config,
+    snapshot: date,
+    *,
+    sc_ids: set[int] | None = None,
+    notes_path: Path | None = None,
+) -> tuple[dict, dict, dict]:
+    """Extract + assemble cell records without writing snapshot files."""
+    acc, users = extract_pbf(str(pbf), cfg, snapshot, sc_ids)
+    if notes_path is not None:
+        print(f"Notes bis {snapshot.isoformat()}…", flush=True)
+        credit_closed_notes(notes_path, snapshot, cfg, acc, users)
+    all_cells = cells_for_bboxes(cfg.bboxes, cfg.h3_res)
+    all_cells.update(acc.keys())
+    print(f"H3-Zellen (inkl. leerer Felder): {len(all_cells):,}")
+    print("Glätte Nachbarn, bilde Usergebiete, setze Aktivitätszentren…")
+    return assemble_cell_records(acc, users, all_cells, cfg)
+
+
+def _users_as_str_keys(user_stats: dict) -> dict:
+    return {str(uid): st for uid, st in user_stats.items()}
+
+
+def _load_prev_from_disk(out_dir: Path, prev: date) -> tuple[dict | None, dict | None]:
+    prev_dir = out_dir / prev.isoformat()
+    if not prev_dir.is_dir():
+        return None, None
+    prev_records = records_from_snapshot(prev_dir)
+    if prev_records is None:
+        return None, None
+    prev_users = user_stats_from_snapshot(prev_dir)
+    if not isinstance(prev_users, dict):
+        return None, None
+    return prev_records, prev_users
+
+
+def _ephemeral_prev_records(
+    cfg: Config,
+    prev: date,
+    *,
+    clips: list[Path] | None,
+    sc_ids: set[int] | None,
+    notes_path: Path | None,
+) -> tuple[dict | None, dict | None]:
+    """Build the previous quarter in memory for fronts only (no public data folder)."""
+    if not clips:
+        return None, None
+    print(f"Vergleichsstand {prev.isoformat()} (nur für Haifischzähne, temporär)…")
+    pbf, parts = snapshot_pbf_from_clips(clips, TMP, prev)
+    try:
+        records, user_stats, _centers = _assemble_from_pbf(
+            pbf, cfg, prev, sc_ids=sc_ids, notes_path=notes_path
+        )
+        return records, _users_as_str_keys(user_stats)
+    finally:
+        _unlink_quiet(pbf)
+        for part in parts:
+            _unlink_quiet(part)
+
+
+def _resolve_prev_for_fronts(
+    out_dir: Path,
+    cfg: Config,
+    snapshot: date,
+    *,
+    clips: list[Path] | None = None,
+    sc_ids: set[int] | None = None,
+    notes_path: Path | None = None,
+) -> tuple[dict | None, dict | None, str | None]:
+    prev = previous_quarter_date(snapshot)
+    prev_records, prev_users = _load_prev_from_disk(out_dir, prev)
+    if prev_records is not None and prev_users is not None:
+        return prev_records, prev_users, prev.isoformat()
+    prev_records, prev_users = _ephemeral_prev_records(
+        cfg, prev, clips=clips, sc_ids=sc_ids, notes_path=notes_path
+    )
+    if prev_records is None or prev_users is None:
+        return None, None, None
+    return prev_records, prev_users, prev.isoformat()
+
 
 def _write_sidecars(
     snap_dir: Path,
     snapshot: date,
+    cfg: Config,
     records: dict | None = None,
     user_stats: dict | None = None,
+    *,
+    clips: list[Path] | None = None,
+    sc_ids: set[int] | None = None,
+    notes_path: Path | None = None,
 ) -> None:
-    """Territory and front sidecars for one snapshot; needs the previous quarter."""
+    """Territory and front sidecars; builds an ephemeral previous quarter when needed."""
     if records is None:
         records = records_from_snapshot(snap_dir)
         if records is None:
@@ -61,33 +155,34 @@ def _write_sidecars(
         user_stats = user_stats_from_snapshot(snap_dir)
         if not isinstance(user_stats, dict):
             return
-    prev = previous_quarter_date(snapshot)
-    prev_dir = snap_dir.parent / prev.isoformat()
-    prev_records = records_from_snapshot(prev_dir) if prev_dir.is_dir() else None
-    prev_users = user_stats_from_snapshot(prev_dir) if prev_records is not None else None
-    if not isinstance(prev_users, dict):
-        prev_records = None
-        prev_users = None
-    write_sidecars(
-        snap_dir,
-        records,
-        user_stats,
-        prev_records,
-        prev_users,
-        prev.isoformat() if prev_records is not None else None,
+    prev_records, prev_users, prev_id = _resolve_prev_for_fronts(
+        snap_dir.parent,
+        cfg,
+        snapshot,
+        clips=clips if clips is not None else _HISTORY_CLIPS,
+        sc_ids=sc_ids if sc_ids is not None else _SC_IDS,
+        notes_path=notes_path if notes_path is not None else _NOTES_PATH,
     )
-    print(f"Sidecars: {snap_dir / 'overlays.json.gz'}")
+    write_sidecars(snap_dir, records, user_stats, prev_records, prev_users, prev_id)
+    if prev_id:
+        print(f"Sidecars: {snap_dir / 'overlays.json.gz'} (+ fronts vs {prev_id})")
+    else:
+        print(f"Sidecars: {snap_dir / 'overlays.json.gz'} (ohne fronts)")
 
 
-def _upgrade_snapshots(out_dir: Path) -> None:
+def _upgrade_snapshots(out_dir: Path, cfg: Config) -> None:
     """Bring archived snapshot folders to the current file layout."""
     for snap_dir in list_snapshot_dirs(out_dir):
         if migrate_legacy_snapshot(snap_dir):
             print(f"Snapshot umgestellt: {snap_dir.name}")
     for snap_dir in list_snapshot_dirs(out_dir):
-        if (snap_dir / "overlays.json.gz").exists():
+        if (snap_dir / "overlays.json.gz").exists() and (snap_dir / "fronts.json.gz").exists():
             continue
-        _write_sidecars(snap_dir, date.fromisoformat(snap_dir.name))
+        try:
+            when = date.fromisoformat(snap_dir.name)
+        except ValueError:
+            continue
+        _write_sidecars(snap_dir, when, cfg)
 
 
 def run_snapshot(
@@ -98,22 +193,28 @@ def run_snapshot(
     *,
     sc_ids: set[int] | None = None,
     notes_path: Path | None = None,
+    clips: list[Path] | None = None,
 ) -> None:
     entry = snapshot_entry(snapshot)
     print(f"Auswertung {entry['label']} ({pbf})…")
-    acc, users = extract_pbf(str(pbf), cfg, snapshot, sc_ids)
-    if notes_path is not None:
-        print(f"Notes bis {snapshot.isoformat()}…", flush=True)
-        credit_closed_notes(notes_path, snapshot, cfg, acc, users)
-    all_cells = cells_for_bboxes(cfg.bboxes, cfg.h3_res)
-    all_cells.update(acc.keys())
-    print(f"H3-Zellen (inkl. leerer Felder): {len(all_cells):,}")
-    print("Glätte Nachbarn, bilde Usergebiete, setze Aktivitätszentren…")
-    records, user_stats, centers = assemble_cell_records(acc, users, all_cells, cfg)
+    records, user_stats, centers = _assemble_from_pbf(
+        pbf, cfg, snapshot, sc_ids=sc_ids, notes_path=notes_path
+    )
     snap_dir.mkdir(parents=True, exist_ok=True)
-    write_json_sidecars(snap_dir, records, user_stats, cfg, snapshot, centers, snapshot=entry)
-    write_pmtiles(snap_dir / "cells.pmtiles", records, cfg)
-    _write_sidecars(snap_dir, snapshot, records, {str(uid): st for uid, st in user_stats.items()})
+    zoom = history_tile_zoom(snapshot)
+    snap_cfg = replace(cfg, max_zoom=zoom) if zoom is not None else cfg
+    write_json_sidecars(snap_dir, records, user_stats, snap_cfg, snapshot, centers, snapshot=entry)
+    write_pmtiles(snap_dir / "cells.pmtiles", records, snap_cfg)
+    _write_sidecars(
+        snap_dir,
+        snapshot,
+        snap_cfg,
+        records,
+        _users_as_str_keys(user_stats),
+        clips=clips,
+        sc_ids=sc_ids,
+        notes_path=notes_path,
+    )
     print(f"Fertig: {snap_dir}")
 
 
@@ -182,7 +283,7 @@ def _snapshot_dir(out_dir: Path, args: argparse.Namespace) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="OSM Land Gain Pipeline (Geofabrik Internal, kein Overpass)")
-    parser.add_argument("--profile", choices=sorted(PROFILES), default="dev", help="dev = Berlin-Test-BBOX, prod = Berlin+Umland+Lörrach")
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="dev", help="dev = Berlin-Test-BBOX, prod = Berlin+Umland")
     parser.add_argument("--pbf", type=Path, help="Lokales PBF (überspringt Download und Zuschnitt)")
     parser.add_argument("--download", action="store_true", help="Internal-PBF von Geofabrik laden")
     parser.add_argument("--history", action="store_true", help="Stände aus History-OSH erzeugen")
@@ -218,8 +319,10 @@ def main(argv: list[str] | None = None) -> int:
         print(err, file=sys.stderr)
         return 1
 
+    global _HISTORY_CLIPS, _SC_IDS, _NOTES_PATH
+
     if args.upgrade:
-        _upgrade_snapshots(args.out)
+        _upgrade_snapshots(args.out, cfg)
         write_snapshots_manifest(args.out)
         return 0
     if args.tiles_only:
@@ -228,7 +331,13 @@ def main(argv: list[str] | None = None) -> int:
         if records is None:
             print(f"Keine Zelldaten in {snap_dir}", file=sys.stderr)
             return 1
-        write_pmtiles(snap_dir / "cells.pmtiles", records, cfg)
+        try:
+            when = date.fromisoformat(snap_dir.name)
+        except ValueError:
+            when = None
+        zoom = history_tile_zoom(when) if when else None
+        tile_cfg = replace(cfg, max_zoom=zoom) if zoom is not None else cfg
+        write_pmtiles(snap_dir / "cells.pmtiles", records, tile_cfg)
         return 0
 
     snapshot_dates: list[date] = []
@@ -237,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         latest_date = date.fromisoformat(args.snapshot)
     if args.dates:
         try:
-            snapshot_dates = parse_dates(args.dates)
+            snapshot_dates = sorted(parse_dates(args.dates))
         except ValueError as err:
             print(err, file=sys.stderr)
             return 1
@@ -267,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         skip=args.skip_planet,
         refresh=args.refresh_planet,
     )
+    _SC_IDS = sc_ids
+    _NOTES_PATH = notes_path
 
     try:
         if args.pbf:
@@ -296,13 +407,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.history:
                 clips = clip_history_sources(profile.sources, PBF_CACHE, TMP, cookie)
+                _HISTORY_CLIPS = clips
                 for when in snapshot_dates:
                     snap_dir = args.out / when.isoformat()
                     if not args.force and _snapshot_current(snap_dir, cfg):
                         print(f"Überspringe {when.isoformat()} (bereits vorhanden).")
                         continue
                     pbf, parts = snapshot_pbf_from_clips(clips, TMP, when)
-                    run_snapshot(pbf, snap_dir, cfg, when, sc_ids=sc_ids, notes_path=notes_path)
+                    run_snapshot(
+                        pbf,
+                        snap_dir,
+                        cfg,
+                        when,
+                        sc_ids=sc_ids,
+                        notes_path=notes_path,
+                        clips=clips,
+                    )
                     _unlink_quiet(pbf)
                     for part in parts:
                         _unlink_quiet(part)
@@ -313,9 +433,12 @@ def main(argv: list[str] | None = None) -> int:
     except OsmiumError as err:
         return die_osmium(err)
     finally:
+        _HISTORY_CLIPS = None
+        _SC_IDS = None
+        _NOTES_PATH = None
         _drop_notes_dump(notes_path)
 
-    _upgrade_snapshots(args.out)
+    _upgrade_snapshots(args.out, cfg)
     write_snapshots_manifest(args.out)
     return 0
 

@@ -1,6 +1,6 @@
 import maplibregl from "maplibre-gl";
 import { PMTiles, Protocol } from "pmtiles";
-import { colorIndexFromName, CURRENTNESS_STOPS, FEATURE_STOPS, MEEPLE, PARCHMENT } from "./colors";
+import { colorIndexFromName, CURRENTNESS_STOPS, MEEPLE, PARCHMENT } from "./colors";
 import {
   ACTIVITY_DOT_LEVELS,
   EMPTY_ACTIVITY,
@@ -34,6 +34,8 @@ export interface MapHandles {
   setOverlayOpacity: (t: number) => void;
   /** Hand over the per-cell top users once cells.bin.gz finished loading. */
   setTopUsers: (next: TopUsers | null) => void;
+  /** Show or clear shark-tooth fronts without reloading tiles. */
+  setPackedFronts: (next: PackedFronts | null) => void;
   setSnapshot: (
     next: SnapshotCore,
     nextUsers: Record<string, UserStat>,
@@ -41,6 +43,7 @@ export interface MapHandles {
     packedOverlays?: PackedOverlays | null,
     packedFronts?: PackedFronts | null,
   ) => void;
+  setFeatureMax: (next: Partial<Record<FilterId, number>> | null) => void;
 }
 
 const LABEL_FONT = ["Noto Sans Regular"];
@@ -159,7 +162,7 @@ function interpolateCount(nProp: string, maxCount: number): maplibregl.Expressio
     ["ln", ["+", 1, ["max", 0, ["to-number", ["get", nProp]]]]],
     Math.log1p(hi),
   ];
-  return interpolateStops(t, FEATURE_STOPS);
+  return interpolateStops(t, CURRENTNESS_STOPS);
 }
 
 function pref(filter: FilterId, key: string): string {
@@ -193,7 +196,13 @@ export function warmTiles(url: string): void {
   void archive.getHeader().catch(() => {});
 }
 
-/** Camera limits. PMTiles maxzoom (config max_zoom) is 14; MapLibre overzooms beyond that. */
+/** Camera limits. PMTiles maxzoom (config max_zoom) is usually 14; the map overzooms beyond that. */
+const DEFAULT_TILE_MAX_ZOOM = 14;
+
+function tileMaxZoom(meta?: { max_zoom?: number } | null): number {
+  const z = meta?.max_zoom;
+  return typeof z === "number" && Number.isFinite(z) && z >= MAP_MIN_ZOOM ? z : DEFAULT_TILE_MAX_ZOOM;
+}
 
 /** Zoom at which the 8-column lattice looks right. Spacing follows mercator (×2 per zoom). */
 const ACTIVITY_DOT_REF_ZOOM = 15;
@@ -370,10 +379,12 @@ export async function createMap(
     fitBboxes?: [number, number, number, number][];
     packedOverlays?: PackedOverlays | null;
     packedFronts?: PackedFronts | null;
+    featureMax?: Partial<Record<FilterId, number>> | null;
   },
 ): Promise<MapHandles> {
   let core = initialCore;
   let users = initialUsers;
+  let featureMax: Partial<Record<FilterId, number>> | null = camera?.featureMax ?? null;
   let topUsers: TopUsers | null = null;
   let packedOverlays: PackedOverlays | null = camera?.packedOverlays ?? null;
   let packedFronts: PackedFronts | null = camera?.packedFronts ?? null;
@@ -429,7 +440,7 @@ export async function createMap(
     const n = pref(filter, "n");
     const w = pref(filter, "w");
     const activityFill = interpolateActivity(cu, n, sparseThreshold(core.meta, filter));
-    const countFill = interpolateCount(n, maxFeatureCount(core.meta, filter));
+    const countFill = interpolateCount(n, maxFeatureCount(core.meta, filter, featureMax));
     const scaleFill = mode === "features" ? countFill : activityFill;
     const choropleth = mode === "currentness" || mode === "features";
     const occupied = [">", ["to-number", ["get", n]], 0] as maplibregl.ExpressionSpecification;
@@ -758,7 +769,7 @@ export async function createMap(
       type: "vector",
       url: "pmtiles://" + pmtilesUrl,
       minzoom: MAP_MIN_ZOOM,
-      maxzoom: 14,
+      maxzoom: tileMaxZoom(core.meta),
       promoteId: "h",
     });
     addH3FillLayers();
@@ -992,6 +1003,7 @@ export async function createMap(
         "text-opacity-transition": NO_FADE,
       },
     });
+    resetPaintStyle();
     applyPaint();
     map.once("idle", () => applyPaint());
     const boxes = (camera?.fitBboxes?.filter((b) => b.length === 4) ?? []) as BBox4[];
@@ -1061,7 +1073,7 @@ export async function createMap(
   // Catch frames where the camera moved without a zoom event (or setData lagged).
   map.on("render", syncFrontsToCamera);
 
-  const replaceH3Source = (url: string) => {
+  const replaceH3Source = (url: string, maxZoom = tileMaxZoom(core.meta)) => {
     const selLayers = ["h3-line-sel", "h3-line-sel-halo"];
     const baseLayers = ["h3-grid", "h3-hatch", "h3-fill-dim", "h3-fill-sparse", "h3-fill"];
     for (const id of [...selLayers, ...baseLayers]) {
@@ -1072,7 +1084,7 @@ export async function createMap(
       type: "vector",
       url: "pmtiles://" + url,
       minzoom: MAP_MIN_ZOOM,
-      maxzoom: 14,
+      maxzoom: maxZoom,
       promoteId: "h",
     });
     const beforeActivity = map.getLayer("user-activity-fill") ? "user-activity-fill" : undefined;
@@ -1167,6 +1179,10 @@ export async function createMap(
       topUsers = next;
       if (map.isStyleLoaded()) refreshActivity();
     },
+    setPackedFronts: (next) => {
+      packedFronts = next;
+      if (map.isStyleLoaded()) refreshOverlays();
+    },
     setSnapshot: (next, nextUsers, url, nextOverlays, nextFronts) => {
       core = next;
       users = nextUsers;
@@ -1177,12 +1193,17 @@ export async function createMap(
       overlayCache.clear();
       resetPaintStyle();
       clearStatsCaches();
-      if (map.getSource("h3")) replaceH3Source(url);
+      if (map.getSource("h3")) replaceH3Source(url, tileMaxZoom(next.meta));
       if (map.isStyleLoaded()) {
         refreshOverlays();
         refreshActivity();
         applyPaint();
       }
+    },
+    setFeatureMax: (next) => {
+      featureMax = next;
+      resetPaintStyle();
+      if (map.isStyleLoaded()) applyPaint();
     },
   };
 }

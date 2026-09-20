@@ -42,24 +42,6 @@ export const CURRENTNESS_STOPS: Array<[number, string]> = [
 
 export const CURRENTNESS_CSS = CURRENTNESS_STOPS.map(([t, c]) => `${c} ${Math.round(t * 100)}%`).join(", ");
 
-/** Stops 0–1: hell (wenig) → blau, dunkles Blau/Lila mäßig gedrängt, Rot ab 0,88 */
-export const FEATURE_STOPS: Array<[number, string]> = [
-  [0, "#f8fafc"],
-  [0.12, "#e0f2fe"],
-  [0.26, "#bae6fd"],
-  [0.42, "#38bdf8"],
-  [0.56, "#0ea5e9"],
-  [0.68, "#0284c7"],
-  [0.74, "#0369a1"],
-  [0.8, "#1e40af"],
-  [0.84, "#6b21a8"],
-  [0.88, "#be185d"],
-  [0.94, "#e11d48"],
-  [1, "#fb923c"],
-];
-
-export const FEATURE_CSS = FEATURE_STOPS.map(([t, c]) => `${c} ${Math.round(t * 100)}%`).join(", ");
-
 export function currentnessColor(value: number): string {
   const t = Math.max(0, Math.min(1, value));
   let i = 0;

@@ -235,7 +235,7 @@ def test_cells_for_bboxes_union() -> None:
 def test_season_labels() -> None:
     from datetime import date
 
-    from pipeline.snapshots import is_quarter_date, snapshot_entry
+    from pipeline.snapshots import is_quarter_date, is_quarter_pipeline_day, snapshot_entry
 
     spring = snapshot_entry(date(2026, 3, 21))
     assert spring["season"] == "fruehling"
@@ -257,6 +257,12 @@ def test_season_labels() -> None:
     assert is_quarter_date(date(2026, 12, 21))
     assert not is_quarter_date(date(2026, 3, 1))
     assert not is_quarter_date(date(2026, 9, 4))
+    assert is_quarter_pipeline_day(date(2026, 3, 22))
+    assert is_quarter_pipeline_day(date(2026, 6, 22))
+    assert is_quarter_pipeline_day(date(2026, 9, 22))
+    assert is_quarter_pipeline_day(date(2026, 12, 22))
+    assert not is_quarter_pipeline_day(date(2026, 3, 21))
+    assert not is_quarter_pipeline_day(date(2026, 9, 4))
     odd = snapshot_entry(date(2026, 8, 31))
     assert odd["season"] == ""
     assert "31.08.2026" in odd["label"]
@@ -268,6 +274,7 @@ def test_snapshot_date_for_run() -> None:
     from pipeline.snapshots import most_recent_quarter, snapshot_date_for_run
 
     assert snapshot_date_for_run(date(2026, 9, 21)) == date(2026, 9, 21)
+    assert snapshot_date_for_run(date(2026, 9, 22)) == date(2026, 9, 21)
     assert snapshot_date_for_run(date(2026, 8, 31)) == date(2026, 6, 21)
     assert most_recent_quarter(date(2026, 1, 10)) == date(2025, 12, 21)
 
@@ -433,14 +440,54 @@ def test_prune_and_manifest() -> None:
             folder = root / day.isoformat()
             folder.mkdir()
             (folder / "cells.json").write_text("{}", encoding="utf-8")
+        # Two yearly history winters older than the 12-quarter window.
+        for day in (date(2021, 12, 21), date(2022, 12, 21)):
+            folder = root / day.isoformat()
+            folder.mkdir()
+            (folder / "cells.json").write_text("{}", encoding="utf-8")
         kept = prune_snapshots(root, keep=MAX_SNAPSHOTS)
-        assert len(kept) == MAX_SNAPSHOTS
+        names = {path.name for path in kept}
+        assert "2021-12-21" in names
+        assert "2022-12-21" in names
+        assert "2024-01-01" not in names
         manifest = write_snapshots_manifest(root)
-        assert len(manifest["snapshots"]) == MAX_SNAPSHOTS
+        assert len(manifest["snapshots"]) <= MAX_SNAPSHOTS
+        assert all(s["id"][5:10] in ("03-21", "06-21", "09-21", "12-21") for s in manifest["snapshots"])
+        history_ids = [s["id"] for s in manifest["history"]]
+        assert history_ids == ["2021-12-21", "2022-12-21"]
         ids = [s["id"] for s in manifest["snapshots"]]
         assert ids == sorted(ids)
         payload = json.loads((root / "snapshots.json").read_text(encoding="utf-8"))
         assert payload["snapshots"][-1]["id"] == ids[-1]
+        assert payload["history"][0]["year"] == 2021
+        assert payload["max_count"]["all"] == 0
+
+
+def test_manifest_global_max_count() -> None:
+    import json
+    import tempfile
+    from datetime import date
+
+    from pipeline.snapshots import write_snapshots_manifest
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        for day, all_count, highway in (
+            (date(2025, 12, 21), 10, 4),
+            (date(2026, 3, 21), 40, 2),
+            (date(2026, 6, 21), 25, 9),
+        ):
+            folder = root / day.isoformat()
+            folder.mkdir()
+            (folder / "cells.json").write_text("{}", encoding="utf-8")
+            (folder / "meta.json").write_text(
+                json.dumps({"max_count": {"all": all_count, "highway": highway}}),
+                encoding="utf-8",
+            )
+        manifest = write_snapshots_manifest(root)
+        assert manifest["max_count"]["all"] == 40
+        assert manifest["max_count"]["highway"] == 9
+        assert manifest["max_count"]["building"] == 0
 
 
 def test_parse_dates() -> None:
@@ -456,17 +503,19 @@ def test_parse_dates() -> None:
 
 
 def test_profile_bboxes() -> None:
-    from pipeline.config import BBBIKE_BERLIN_BBOX, BERLIN_BBOX, DEV_TEST_BBOXES, LOERRACH_BBOX, config_for_profile
+    from pipeline.config import BBBIKE_BERLIN_BBOX, BERLIN_BBOX, DEV_TEST_BBOXES, config_for_profile
 
     dev, cfg = config_for_profile("dev")
     assert cfg.bboxes == DEV_TEST_BBOXES
     assert cfg.bboxes == ((13.2753, 52.4382, 13.5005, 52.5519),)
     assert len(dev.sources) == 1
+    assert cfg.max_zoom == 12
     prod, pcfg = config_for_profile("prod")
     assert BERLIN_BBOX in pcfg.bboxes
     assert BBBIKE_BERLIN_BBOX in pcfg.bboxes
-    assert LOERRACH_BBOX in pcfg.bboxes
-    assert [src.id for src in prod.sources] == ["berlin", "brandenburg", "freiburg-regbez"]
+    assert [src.id for src in prod.sources] == ["berlin", "brandenburg"]
+    assert len(pcfg.bboxes) == 2
+    assert pcfg.max_zoom == 12
 
 
 def test_apply_cookie_parses_http_format() -> None:
@@ -714,6 +763,7 @@ if __name__ == "__main__":
     test_pack_overlays_connected()
     test_pack_fronts_new_land()
     test_prune_and_manifest()
+    test_manifest_global_max_count()
     test_parse_dates()
     test_profile_bboxes()
     test_apply_cookie_parses_http_format()

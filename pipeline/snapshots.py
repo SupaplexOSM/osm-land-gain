@@ -8,7 +8,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from .config import MAX_SNAPSHOTS, SNAPSHOT_DAY, SNAPSHOT_MONTHS
+from .config import FILTERS, MAX_SNAPSHOTS, SNAPSHOT_DAY, SNAPSHOT_MONTHS, SNAPSHOT_PIPELINE_DAY
 
 SNAPSHOT_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -55,6 +55,15 @@ def parse_dates(raw: str) -> list[date]:
 
 def is_quarter_date(day: date) -> bool:
     return day.month in SNAPSHOT_MONTHS and day.day == SNAPSHOT_DAY
+
+
+def is_quarter_pipeline_day(day: date) -> bool:
+    """GitHub Action day: 22 Mar/Jun/Sep/Dec, after the 21st extract is on Geofabrik."""
+    return day.month in SNAPSHOT_MONTHS and day.day == SNAPSHOT_PIPELINE_DAY
+
+
+def is_winter_date(day: date) -> bool:
+    return day.month == 12 and day.day == SNAPSHOT_DAY
 
 
 def most_recent_quarter(today: date | None = None) -> date:
@@ -117,7 +126,7 @@ def snapshot_period_hint(day: date) -> str:
     )
 
 
-def snapshot_entry(day: date) -> dict[str, str]:
+def snapshot_entry(day: date) -> dict:
     season = SEASON_BY_MONTH.get(day.month, "") if day.day == SNAPSHOT_DAY else ""
     if season:
         short = f"{SEASON_LABEL_DE[season]} {day.year}"
@@ -132,6 +141,7 @@ def snapshot_entry(day: date) -> dict[str, str]:
         "short": short,
         "label": label,
         "period": snapshot_period_hint(day),
+        "year": day.year,
     }
 
 
@@ -148,21 +158,86 @@ def list_snapshot_dirs(data_dir: Path) -> list[Path]:
     return sorted(dirs, key=lambda path: path.name)
 
 
+def split_snapshot_dirs(
+    dirs: list[Path],
+    keep: int = MAX_SNAPSHOTS,
+    today: date | None = None,
+) -> tuple[list[Path], list[Path]]:
+    """Quarter folders among the last `keep` calendar quarters vs older 21-Dec history."""
+    recent = {day.isoformat() for day in last_quarter_dates(n=keep, today=today)}
+    kept_quarters = [path for path in dirs if path.name in recent]
+    history = [
+        path
+        for path in dirs
+        if is_winter_date(date.fromisoformat(path.name)) and path.name not in recent
+    ]
+    return kept_quarters, history
+
+
+def is_yearly_history(day: date, today: date | None = None) -> bool:
+    """21 Dec that is not among the current 12 quarterly slider dates."""
+    return is_winter_date(day) and day not in last_quarter_dates(today=today)
+
+
+def history_tile_zoom(day: date, today: date | None = None) -> int | None:
+    """Always None: every snapshot uses Config.max_zoom (HISTORY_MAX_ZOOM)."""
+    return None
+
+
 def prune_snapshots(data_dir: Path, keep: int = MAX_SNAPSHOTS) -> list[Path]:
     dirs = list_snapshot_dirs(data_dir)
-    drop = dirs[: max(0, len(dirs) - keep)]
-    for path in drop:
-        print(f"Snapshot entfernt (Limit {keep}): {path.name}")
+    kept_quarters, history = split_snapshot_dirs(dirs, keep)
+    keep_names = {path.name for path in kept_quarters} | {path.name for path in history}
+    for path in dirs:
+        if path.name in keep_names:
+            continue
+        print(f"Snapshot entfernt (Limit {keep} Quartale): {path.name}")
         shutil.rmtree(path)
     return list_snapshot_dirs(data_dir)
 
 
+def _max_count_from_snapshot(path: Path) -> dict:
+    meta_file = path / "meta.json"
+    if meta_file.exists():
+        try:
+            payload = json.loads(meta_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        counts = payload.get("max_count") if isinstance(payload, dict) else None
+        if isinstance(counts, dict):
+            return counts
+    cells_file = path / "cells.json"
+    if cells_file.exists():
+        try:
+            payload = json.loads(cells_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        meta = payload.get("meta") if isinstance(payload, dict) else None
+        counts = meta.get("max_count") if isinstance(meta, dict) else None
+        if isinstance(counts, dict):
+            return counts
+    return {}
+
+
+def snapshot_max_counts(dirs: list[Path]) -> dict[str, int]:
+    out = {filt: 0 for filt in FILTERS}
+    for path in dirs:
+        counts = _max_count_from_snapshot(path)
+        for filt in FILTERS:
+            raw = counts.get(filt)
+            if isinstance(raw, (int, float)) and raw > out[filt]:
+                out[filt] = int(raw)
+    return out
+
+
 def write_snapshots_manifest(data_dir: Path, keep: int = MAX_SNAPSHOTS) -> dict:
     dirs = prune_snapshots(data_dir, keep)
-    snapshots = []
-    for path in dirs:
-        snapshots.append(snapshot_entry(date.fromisoformat(path.name)))
-    payload = {"snapshots": snapshots}
+    quarters, history_dirs = split_snapshot_dirs(dirs, keep)
+    payload = {
+        "snapshots": [snapshot_entry(date.fromisoformat(path.name)) for path in quarters],
+        "history": [snapshot_entry(date.fromisoformat(path.name)) for path in history_dirs],
+        "max_count": snapshot_max_counts(dirs),
+    }
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "snapshots.json").write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

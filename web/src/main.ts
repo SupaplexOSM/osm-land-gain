@@ -1,5 +1,5 @@
 import "maplibre-gl/dist/maplibre-gl.css";
-import { CURRENTNESS_CSS, FEATURE_CSS } from "./colors";
+import { CURRENTNESS_CSS } from "./colors";
 import { parsePackedFronts, type PackedFronts } from "./fronts";
 import { fetchJson, fetchJsonOptional, isAbortError } from "./gz";
 import { createMap, warmTiles, type MapHandles } from "./map";
@@ -20,8 +20,10 @@ import {
   featureLegendMarks,
   featureStrength,
   maxFeatureCount,
+  mergeMaxCount,
   sparseThreshold,
   viewportRanking,
+  pendingViewportSummary,
   viewportSummary,
   visibleCellStats,
   winnerColorByUid,
@@ -40,6 +42,7 @@ interface Snapshot {
   label: string;
   short?: string;
   period?: string;
+  year?: number;
 }
 
 /**
@@ -72,17 +75,6 @@ const MONTH_DE = [
   "Dezember",
 ];
 
-function previousQuarterDate(iso: string): Date {
-  const [yearRaw, monthRaw] = iso.split("-").map(Number);
-  let month = (monthRaw || 1) - 3;
-  let year = yearRaw || 1970;
-  if (month <= 0) {
-    month += 12;
-    year -= 1;
-  }
-  return new Date(Date.UTC(year, month - 1, 21));
-}
-
 function formatPeriodDay(d: Date, withYear: boolean): string {
   const text = `${d.getUTCDate()}. ${MONTH_DE[d.getUTCMonth() + 1]}`;
   return withYear ? `${text} ${d.getUTCFullYear()}` : text;
@@ -91,17 +83,36 @@ function formatPeriodDay(d: Date, withYear: boolean): string {
 function snapshotPeriodHint(s: Snapshot): string {
   const end = new Date(`${s.date}T00:00:00Z`);
   if (Number.isNaN(end.getTime())) return s.period ?? "";
-  const start = previousQuarterDate(s.date);
-  const startYear = start.getUTCFullYear() !== end.getUTCFullYear();
-  return `OSM-Bearbeitungen im Zeitraum ${formatPeriodDay(start, startYear)} bis ${formatPeriodDay(end, true)}`;
+  return `OSM-Bearbeitungen bis ${formatPeriodDay(end, true)}`;
 }
 
 function isSpringSnapshot(s: Snapshot): boolean {
   return s.season === "fruehling" || /^\d{4}-03-21$/.test(s.date);
 }
 
-function snapshotCountLabel(n: number): string {
-  return n === 1 ? "1 Datenstand" : `${n} Datenstände`;
+function isWinterSnapshot(s: Snapshot): boolean {
+  return s.season === "winter" || /^\d{4}-12-21$/.test(s.date || s.id);
+}
+
+/** Evenly spaced tick indices; always includes the first (and last when n > 1). At most `maxLabels`. */
+function yearLabelIndices(n: number, maxLabels = 7): number[] {
+  if (n <= 0) return [];
+  const count = Math.min(n, maxLabels);
+  if (count === 1) return [0];
+  const out = new Set<number>();
+  for (let k = 0; k < count; k++) {
+    out.add(Math.round((k / (count - 1)) * (n - 1)));
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+function snapshotYear(s: Snapshot): number {
+  return s.year ?? Number((s.date || s.id).slice(0, 4));
+}
+
+function snapshotDisplayLabel(s: Snapshot, yearMode: boolean): string {
+  if (yearMode) return `Datenstand: ${snapshotYear(s)}`;
+  return s.label;
 }
 
 function snapshotMillis(id: string): number {
@@ -131,10 +142,10 @@ function snapshotUrls(id: string): {
   };
 }
 
-function neighbourSnapshotIds(snapshots: Snapshot[], id: string): string[] {
-  const i = snapshots.findIndex((s) => s.id === id);
+function neighbourSnapshotIds(track: Snapshot[], id: string): string[] {
+  const i = track.findIndex((s) => s.id === id);
   if (i < 0) return [];
-  return [snapshots[i + 1]?.id, snapshots[i - 1]?.id].filter((s): s is string => Boolean(s));
+  return [track[i + 1]?.id, track[i - 1]?.id].filter((s): s is string => Boolean(s));
 }
 
 function $(id: string): HTMLElement {
@@ -169,12 +180,21 @@ async function main(): Promise<void> {
   let core: SnapshotCore;
   let users: Record<string, UserStat>;
   let snapshots: Snapshot[] = [];
+  let history: Snapshot[] = [];
+  /** All available 21 Dec stands, oldest → newest (history + winter quarters). */
+  let yearTrack: Snapshot[] = [];
+  let timelineMode: "quarters" | "years" = "quarters";
   let snapshotId = "";
+  /** Slider/label target; may lead `snapshotId` while the map payload is still loading. */
+  let uiSnapshotId = "";
   const snapshotCache = new Map<string, CachedSnapshot>();
   let packedOverlays: PackedOverlays | null = null;
   let packedFronts: PackedFronts | null = null;
   let topUsers: TopUsers | null = null;
   let topUsersJob: TopUsersHandle | null = null;
+  let scaleMaxCount: Partial<Record<FilterId, number>> = {};
+  const featureMax = (nextFilter = filter) => maxFeatureCount(core.meta, nextFilter, scaleMaxCount);
+  const activeTrack = () => (timelineMode === "years" ? yearTrack : snapshots);
 
   const takeCachedSnapshot = (id: string): CachedSnapshot | undefined => {
     const hit = snapshotCache.get(id);
@@ -254,7 +274,7 @@ async function main(): Promise<void> {
     const idle =
       window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 1500));
     idle(() => {
-      for (const id of neighbourSnapshotIds(snapshots, snapshotId)) {
+      for (const id of neighbourSnapshotIds(activeTrack(), snapshotId)) {
         if (snapshotCache.has(id)) continue;
         warmTiles(snapshotUrls(id).pmtiles);
         void fetchSnapshotCore(id).catch(() => {});
@@ -263,14 +283,40 @@ async function main(): Promise<void> {
   };
 
   try {
-    const manifest = await fetchJson<{ snapshots?: Snapshot[] }>("./data/snapshots.json");
+    const manifest = await fetchJson<{
+      snapshots?: Snapshot[];
+      history?: Snapshot[];
+      max_count?: Partial<Record<FilterId, number>>;
+    }>("./data/snapshots.json");
     snapshots = (manifest.snapshots ?? []).filter((s) => s.id);
+    history = (manifest.history ?? []).filter((s) => s.id);
     if (!snapshots.length) throw new Error("snapshots.json ist leer");
+    const byId = new Map<string, Snapshot>();
+    for (const s of [...history, ...snapshots]) {
+      if (isWinterSnapshot(s)) byId.set(s.id, s);
+    }
+    yearTrack = [...byId.values()].sort((a, b) => a.date.localeCompare(b.date));
+    scaleMaxCount = mergeMaxCount(manifest.max_count);
+    if (!Object.values(scaleMaxCount).some((n) => (n ?? 0) > 0)) {
+      const metas = await Promise.all(
+        [...snapshots, ...history].map((s) =>
+          fetchJsonOptional<{ max_count?: Partial<Record<FilterId, number>> }>(`./data/${s.id}/meta.json`),
+        ),
+      );
+      scaleMaxCount = mergeMaxCount(...metas.map((m) => m?.max_count));
+    }
     const bootLink = parsePermalink();
     const wanted = bootLink.date;
+    const listed = [...history, ...snapshots];
     const startSnap =
-      (wanted && snapshots.find((s) => s.id === wanted || s.date === wanted)) || snapshots[snapshots.length - 1]!;
+      (wanted && listed.find((s) => s.id === wanted || s.date === wanted)) || snapshots[snapshots.length - 1]!;
     snapshotId = startSnap.id;
+    uiSnapshotId = startSnap.id;
+    // Permalink to a stand that is not among the 12 quarters → open in year mode.
+    timelineMode =
+      snapshots.some((s) => s.id === snapshotId) || !yearTrack.some((s) => s.id === snapshotId)
+        ? "quarters"
+        : "years";
     setProgress(40);
     warmTiles(snapshotUrls(snapshotId).pmtiles);
     const cached = await fetchSnapshotCore(snapshotId);
@@ -313,55 +359,140 @@ async function main(): Promise<void> {
   const snapshotWrap = $("snapshot-slider-wrap");
   const snapshotSlider = $("snapshot-slider") as HTMLInputElement;
   const snapshotLabel = $("snapshot-label");
-  const snapshotCount = $("snapshot-count");
   const snapshotTicks = $("snapshot-ticks");
-  const currentSnapshot = () => snapshots.find((s) => s.id === snapshotId) ?? snapshots[snapshots.length - 1]!;
+  const navPast = $("snapshot-nav-past") as HTMLButtonElement;
+  const navPresent = $("snapshot-nav-present") as HTMLButtonElement;
+  const frontsLegend = $("lede-legend-fronts");
+  const findSnapshot = (id: string) =>
+    snapshots.find((s) => s.id === id || s.date === id) ??
+    history.find((s) => s.id === id || s.date === id) ??
+    yearTrack.find((s) => s.id === id || s.date === id);
+  const currentSnapshot = () => findSnapshot(snapshotId) ?? snapshots[snapshots.length - 1]!;
+  const syncFrontsLegend = () => {
+    const mute = packedFronts == null;
+    frontsLegend.classList.toggle("off", mute);
+    frontsLegend.toggleAttribute("aria-disabled", mute);
+  };
+  /** Shark teeth follow the loaded snapshot in both quarter and year mode. */
+  const syncMapFronts = () => {
+    handles?.setPackedFronts(packedFronts);
+    syncFrontsLegend();
+  };
+  const syncFilterAvailability = () => {
+    const counts = core.meta.max_count ?? {};
+    let fallback = false;
+    FILTERS.forEach((id) => {
+      const b = $("filters").querySelector(`[data-filter="${id}"]`) as HTMLButtonElement | null;
+      if (!b) return;
+      const empty = id !== "all" && (counts[id] ?? 0) <= 0;
+      b.disabled = empty;
+      if (empty) {
+        b.title = `${FILTER_TIPS[id]} (in diesem Datenstand keine Daten)`;
+        if (filter === id) fallback = true;
+      } else {
+        b.title = FILTER_TIPS[id];
+      }
+    });
+    if (fallback) {
+      filter = "all";
+      $("filters").querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("on", b.getAttribute("data-filter") === "all");
+      });
+      handles?.setFilter(filter);
+    }
+  };
+  const syncNavButtons = () => {
+    const canYears = yearTrack.length > 0 && history.length > 0;
+    const inYears = timelineMode === "years";
+    navPast.disabled = !canYears || inYears;
+    navPresent.disabled = !inYears;
+    snapshotWrap.classList.toggle("years", inYears);
+  };
   const syncSnapshotLabel = (id = snapshotId) => {
-    const snap = snapshots.find((s) => s.id === id) ?? currentSnapshot();
-    snapshotLabel.textContent = snap.label;
+    const snap = findSnapshot(id) ?? currentSnapshot();
+    const track = activeTrack();
+    const idx = track.findIndex((s) => s.id === snap.id);
+    const yearMode = timelineMode === "years";
+    const text = snapshotDisplayLabel(snap, yearMode);
+    snapshotLabel.textContent = text;
     snapshotLabel.title = snapshotPeriodHint(snap);
-    const idx = Math.max(0, snapshots.findIndex((s) => s.id === snap.id));
-    snapshotSlider.setAttribute("aria-valuetext", snap.label);
-    snapshotSlider.setAttribute("aria-valuenow", String(idx));
-    const many = snapshots.length > 1;
+    snapshotSlider.setAttribute("aria-valuetext", text);
+    if (idx >= 0) snapshotSlider.setAttribute("aria-valuenow", String(idx));
+    const many = snapshots.length > 1 || yearTrack.length > 1;
     generated.hidden = many;
-    generated.textContent = many ? "" : snap.label;
+    generated.textContent = many ? "" : text;
     generated.title = many ? "" : snapshotPeriodHint(snap);
     snapshotTicks.querySelectorAll("[data-index]").forEach((el) => {
-      const on = Number((el as HTMLElement).dataset.index) === idx;
+      const on = idx >= 0 && Number((el as HTMLElement).dataset.index) === idx;
       el.classList.toggle("on", on);
+      el.querySelector(".snapshot-tick-year")?.classList.toggle("on", on);
     });
+    syncFrontsLegend();
+    syncNavButtons();
   };
-  const setupSlider = () => {
-    const many = snapshots.length > 1;
+  const setupSlider = (focusId = uiSnapshotId) => {
+    const track = activeTrack();
+    const many = snapshots.length > 1 || yearTrack.length > 1;
     snapshotWrap.classList.toggle("hide", !many);
     snapshotWrap.toggleAttribute("hidden", !many);
     snapshotSlider.min = "0";
-    snapshotSlider.max = String(Math.max(0, snapshots.length - 1));
-    snapshotSlider.value = String(Math.max(0, snapshots.findIndex((s) => s.id === snapshotId)));
-    snapshotCount.textContent = snapshotCountLabel(snapshots.length);
+    snapshotSlider.max = String(Math.max(0, track.length - 1));
+    const idx = track.findIndex((s) => s.id === focusId);
+    snapshotSlider.value = String(Math.max(0, idx));
     snapshotTicks.replaceChildren();
-    const n = snapshots.length;
-    snapshots.forEach((s, i) => {
+    const n = track.length;
+    const yearMode = timelineMode === "years";
+    const labelAt = yearMode ? new Set(yearLabelIndices(n, 7)) : null;
+    track.forEach((s, i) => {
       const mark = document.createElement("span");
       mark.className = "snapshot-tick";
       mark.dataset.index = String(i);
-      mark.style.left = `${n <= 1 ? 50 : (i / (n - 1)) * 100}%`;
-      if (isSpringSnapshot(s)) {
+      // Same geometry as the range thumb center: half-thumb + t * (width - thumb).
+      const t = n <= 1 ? 0.5 : i / (n - 1);
+      mark.style.left = `calc(var(--thumb) / 2 + (100% - var(--thumb)) * ${t})`;
+      const showYear = yearMode ? labelAt!.has(i) : isSpringSnapshot(s);
+      if (showYear) {
         const yearBtn = document.createElement("button");
         yearBtn.type = "button";
         yearBtn.className = "snapshot-tick-year";
-        yearBtn.textContent = s.date.slice(0, 4);
-        yearBtn.title = s.label;
+        yearBtn.textContent = String(snapshotYear(s));
+        yearBtn.title = snapshotDisplayLabel(s, yearMode);
         yearBtn.dataset.index = String(i);
         yearBtn.tabIndex = -1;
-        if (i === 0) yearBtn.classList.add("edge-start");
-        if (i === n - 1) yearBtn.classList.add("edge-end");
         mark.append(yearBtn);
       }
       snapshotTicks.append(mark);
     });
-    syncSnapshotLabel();
+    syncSnapshotLabel(focusId);
+  };
+  const pickYearNear = (from: Snapshot): Snapshot => {
+    const t = Date.parse(from.date);
+    const exact = yearTrack.find((s) => s.id === from.id);
+    if (exact) return exact;
+    const earlier = [...yearTrack].reverse().find((s) => Date.parse(s.date) <= t);
+    return earlier ?? yearTrack[yearTrack.length - 1]!;
+  };
+  const enterYearMode = () => {
+    if (timelineMode === "years" || !yearTrack.length || !history.length) return;
+    const next = pickYearNear(currentSnapshot());
+    timelineMode = "years";
+    uiSnapshotId = next.id;
+    setupSlider(next.id);
+    syncMapFronts();
+    void applySnapshot(next.id);
+  };
+  const enterQuarterMode = () => {
+    if (timelineMode === "quarters") return;
+    const cur = currentSnapshot();
+    const next =
+      snapshots.find((s) => s.id === cur.id) ??
+      snapshots.find((s) => s.date === cur.date) ??
+      snapshots[snapshots.length - 1]!;
+    timelineMode = "quarters";
+    uiSnapshotId = next.id;
+    setupSlider(next.id);
+    syncMapFronts();
+    void applySnapshot(next.id);
   };
   setupSlider();
 
@@ -378,11 +509,11 @@ async function main(): Promise<void> {
     legend.toggleAttribute("hidden", !on);
     if (mode === "features") {
       legendTitle.textContent = "Features";
-      legendBar.style.background = `linear-gradient(90deg, ${FEATURE_CSS})`;
+      legendBar.style.background = `linear-gradient(90deg, ${CURRENTNESS_CSS})`;
       legendLabels.classList.add("legend-counts");
       legendLabels.classList.remove("legend-levels");
       legendLabels.replaceChildren();
-      for (const [t, label] of featureLegendMarks(maxFeatureCount(core.meta, filter))) {
+      for (const [t, label] of featureLegendMarks(featureMax())) {
         const span = document.createElement("span");
         span.textContent = label;
         span.style.left = `${Math.round(t * 100)}%`;
@@ -412,7 +543,7 @@ async function main(): Promise<void> {
     }
     const t =
       mode === "features"
-        ? featureStrength(view.count, maxFeatureCount(core.meta, filter))
+        ? featureStrength(view.count, featureMax())
         : cellActivity(view, sparseThreshold(core.meta, filter));
     el.style.left = `${Math.round(Math.max(0, Math.min(1, t)) * 100)}%`;
     el.toggleAttribute("hidden", false);
@@ -428,7 +559,7 @@ async function main(): Promise<void> {
     if (!legendHistoFill || !legendHistoLine) return;
     const values =
       mode === "features"
-        ? cells.map((c) => featureStrength(c.count, maxFeatureCount(core.meta, filter)))
+        ? cells.map((c) => featureStrength(c.count, featureMax()))
         : cells.map((c) => cellActivity(c, sparseThreshold(core.meta, filter)));
     const { fill, line } = densitySvgPaths(densityBins(values));
     legendHistoFill.setAttribute("d", fill);
@@ -463,8 +594,10 @@ async function main(): Promise<void> {
         : null;
     renderCellPanel($("cell-panel"), view, users, filter, core.centers?.[filter] ?? [], mode, colors, highlightedUids, threshold, asOf);
     let cells: CellStats[] = visibleCellStats(handles.map, filter);
-    if (!cells.length) {
-      // Tiles are not in yet: fall back to the hexes covering the viewport.
+    const tilesReady = cells.length > 0;
+    if (!tilesReady) {
+      // Tiles are not in yet: use covering hexes for ranking/mapper count only.
+      // Do not invent zero object/activity stats — that flashed "0 Features" / "0 %".
       cells = cellsInBounds(handles.map.getBounds(), core.meta.h3_res).map((h3) => ({
         h3,
         winner: 0,
@@ -477,10 +610,12 @@ async function main(): Promise<void> {
       }));
     }
     const ranked = viewportRanking(cells.map((c) => c.h3), users, filter, topUsers, snapshotMillis(snapshotId));
-    const summary = viewportSummary(cells, core.meta, filter, topUsers);
+    const summary = tilesReady
+      ? viewportSummary(cells, core.meta, filter, topUsers)
+      : pendingViewportSummary();
     const osmUrl = osmExtentUrl(handles.map.getCenter(), handles.map.getZoom());
     renderViewportPanel($("viewport-panel"), ranked, summary, colors, highlightedUids, osmUrl, asOf, filter);
-    drawLegendDensity(cells);
+    if (tilesReady) drawLegendDensity(cells);
     syncLegendTicks();
     const center = handles.map.getCenter();
     writePermalink({
@@ -522,12 +657,40 @@ async function main(): Promise<void> {
       pmtilesUrl: snapshotUrls(snapshotId).pmtiles,
       packedOverlays,
       packedFronts,
+      featureMax: scaleMaxCount,
     },
   );
   handles.setFilter(filter);
   handles.setMode(mode);
   handles.setSelection(selected);
   handles.setHighlightUsers([...highlightedUids]);
+  syncFrontsLegend();
+
+  let snapGen = 0;
+  let snapAbort: AbortController | null = null;
+  /** Non-null while we wait for h3 viewport tiles after a snapshot switch. */
+  let tilesWaitGen: number | null = null;
+  let tilesWaitTimer = 0;
+  const mapLoading = $("map-loading");
+  const setMapLoading = (on: boolean) => {
+    mapLoading.hidden = !on;
+  };
+  const clearTilesWait = () => {
+    tilesWaitGen = null;
+    window.clearTimeout(tilesWaitTimer);
+  };
+  const finishTilesWait = (gen: number) => {
+    if (tilesWaitGen !== gen) return;
+    clearTilesWait();
+    setMapLoading(false);
+  };
+  const armTilesWait = (gen: number) => {
+    tilesWaitGen = gen;
+    window.clearTimeout(tilesWaitTimer);
+    // Safety net if sourcedata never reports loaded (e.g. empty viewport).
+    tilesWaitTimer = window.setTimeout(() => finishTilesWait(gen), 12_000);
+  };
+
   // The viewport numbers are read off the rendered hexes, so every arriving tile
   // can change them. Refreshing per tile (coalesced) rather than once on "idle"
   // fills the panels as early as possible and keeps them right when a snapshot
@@ -545,6 +708,11 @@ async function main(): Promise<void> {
       neighboursWarmed = true;
       prefetchNeighbours();
     }
+    // Spinner stays until the hex fills for the current viewport are in.
+    if (tilesWaitGen != null && e.isSourceLoaded) {
+      const gen = tilesWaitGen;
+      requestAnimationFrame(() => finishTilesWait(gen));
+    }
   });
   const overlaySlider = $("overlay-opacity") as HTMLInputElement;
   overlaySlider.addEventListener("input", () => {
@@ -559,41 +727,85 @@ async function main(): Promise<void> {
       .map(([id, u]) => ({ uid: Number(id), name: u.name, scores: u.scores }))
       .filter((u) => u.uid && u.name && !u.name.startsWith("#"));
   };
-  let snapGen = 0;
-  let snapAbort: AbortController | null = null;
+  const afterNextPaint = (): Promise<void> =>
+    new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
   const applyLoadedSnapshot = (nextId: string, cached: CachedSnapshot) => {
+    const keptNames = [...highlightedUids]
+      .map((uid) => users[String(uid)]?.name)
+      .filter((name): name is string => Boolean(name) && !name.startsWith("#"));
     core = cached.core;
     users = cached.users;
     packedOverlays = cached.overlays;
     packedFronts = cached.fronts;
     snapshotId = nextId;
+    // uiSnapshotId may already point at a newer slider target; leave it alone.
     // The numbers behind the remembered hexes belong to the old snapshot.
     selectedProps = null;
     hoveredProps = null;
     rebuildUidIndex();
     rebuildUserIndex();
-    const kept = [...highlightedUids].filter((uid) => users[String(uid)]);
     highlightedUids.clear();
-    for (const uid of kept) highlightedUids.add(uid);
-    handles?.setSnapshot(core, users, snapshotUrls(nextId).pmtiles, packedOverlays, packedFronts);
+    for (const name of keptNames) {
+      const uid = uidByName.get(name);
+      if (uid) highlightedUids.add(uid);
+    }
+    const fronts = packedFronts;
+    handles?.setSnapshot(core, users, snapshotUrls(nextId).pmtiles, packedOverlays, fronts);
     handles?.setFilter(filter);
     handles?.setMode(mode);
     handles?.setHighlightUsers([...highlightedUids]);
     startTopUsers(nextId, cached);
-    syncSnapshotLabel();
+    syncFilterAvailability();
+    syncSnapshotLabel(uiSnapshotId);
+    syncFrontsLegend();
     syncLegend();
     refreshPanels();
     neighboursWarmed = false;
+    armTilesWait(snapGen);
   };
-  const applySnapshot = async (nextId: string) => {
+  /**
+   * @param moveSlider When false (native range `input`), the thumb already sits on
+   *   the new index — rewriting `.value` in the same turn can fight the drag and
+   *   delay paint until the snapshot payload is applied.
+   */
+  const applySnapshot = async (nextId: string, moveSlider = true) => {
     if (!nextId) return;
+    // Permalink / deep link to a year stand while still in quarter mode.
+    if (timelineMode === "quarters" && !snapshots.some((s) => s.id === nextId) && yearTrack.some((s) => s.id === nextId)) {
+      timelineMode = "years";
+      uiSnapshotId = nextId;
+      setupSlider(nextId);
+      syncMapFronts();
+    } else if (timelineMode === "years" && !yearTrack.some((s) => s.id === nextId) && snapshots.some((s) => s.id === nextId)) {
+      timelineMode = "quarters";
+      uiSnapshotId = nextId;
+      setupSlider(nextId);
+      syncMapFronts();
+    }
+    uiSnapshotId = nextId;
+    if (moveSlider) {
+      const idx = activeTrack().findIndex((s) => s.id === nextId);
+      if (idx >= 0) snapshotSlider.value = String(idx);
+    }
     syncSnapshotLabel(nextId);
-    snapshotSlider.value = String(Math.max(0, snapshots.findIndex((s) => s.id === nextId)));
-    if (nextId === snapshotId) return;
+    if (nextId === snapshotId) {
+      clearTilesWait();
+      setMapLoading(false);
+      return;
+    }
     const gen = ++snapGen;
     snapAbort?.abort();
     const ac = new AbortController();
     snapAbort = ac;
+    clearTilesWait();
+    setMapLoading(true);
+    // Yield so the thumb + label paint before cache hits / PMTiles work block the main thread.
+    await afterNextPaint();
+    if (gen !== snapGen) return;
     try {
       warmTiles(snapshotUrls(nextId).pmtiles);
       const cached = await fetchSnapshotCore(nextId, ac.signal);
@@ -601,21 +813,46 @@ async function main(): Promise<void> {
       applyLoadedSnapshot(nextId, cached);
     } catch (err) {
       if (isAbortError(err) || gen !== snapGen) return;
+      clearTilesWait();
+      setMapLoading(false);
       throw err;
     }
   };
   snapshotSlider.addEventListener("input", () => {
-    const snap = snapshots[Number(snapshotSlider.value)];
-    if (snap) void applySnapshot(snap.id);
+    const snap = activeTrack()[Number(snapshotSlider.value)];
+    if (snap) void applySnapshot(snap.id, false);
   });
+  snapshotWrap.addEventListener(
+    "wheel",
+    (ev) => {
+      const dy = ev.deltaY;
+      const dx = ev.deltaX;
+      // Prefer vertical; fall back to horizontal trackpad swipes.
+      const delta = Math.abs(dy) >= Math.abs(dx) ? dy : dx;
+      if (!delta) return;
+      const track = activeTrack();
+      if (track.length < 2) return;
+      ev.preventDefault();
+      const cur = Math.max(
+        0,
+        track.findIndex((s) => s.id === uiSnapshotId),
+      );
+      // Scroll down / right → later stand; up / left → earlier.
+      const next = Math.max(0, Math.min(track.length - 1, cur + (delta > 0 ? 1 : -1)));
+      const snap = track[next];
+      if (snap && snap.id !== uiSnapshotId) void applySnapshot(snap.id, true);
+    },
+    { passive: false },
+  );
   snapshotTicks.addEventListener("click", (ev) => {
     const btn = (ev.target as HTMLElement).closest("button");
     if (!btn || !snapshotTicks.contains(btn)) return;
-    const snap = snapshots[Number(btn.dataset.index)];
+    const snap = activeTrack()[Number(btn.dataset.index)];
     if (!snap) return;
-    snapshotSlider.value = String(btn.dataset.index);
-    void applySnapshot(snap.id);
+    void applySnapshot(snap.id, true);
   });
+  navPast.addEventListener("click", () => enterYearMode());
+  navPresent.addEventListener("click", () => enterQuarterMode());
   const searchInput = $("user-search") as HTMLInputElement;
   const searchResults = $("user-search-results");
 
@@ -737,8 +974,8 @@ async function main(): Promise<void> {
   });
 
   $("filters").addEventListener("click", (ev) => {
-    const btn = (ev.target as HTMLElement).closest("button[data-filter]");
-    if (!btn) return;
+    const btn = (ev.target as HTMLElement).closest("button[data-filter]") as HTMLButtonElement | null;
+    if (!btn || btn.disabled) return;
     filter = btn.getAttribute("data-filter") as FilterId;
     $("filters").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
     handles?.setFilter(filter);
@@ -762,6 +999,7 @@ async function main(): Promise<void> {
     b.classList.add("tip");
     if (id === filter) b.classList.add("on");
   });
+  syncFilterAvailability();
   $("modes").querySelector(`[data-mode="${mode}"]`)?.classList.add("on");
   const modeUsers = $("modes").querySelector('[data-mode="users"]') as HTMLButtonElement | null;
   const modeCur = $("modes").querySelector('[data-mode="currentness"]') as HTMLButtonElement | null;
@@ -771,7 +1009,7 @@ async function main(): Promise<void> {
     modeUsers.classList.add("tip");
   }
   if (modeCur) {
-    modeCur.title = "Färbung nach Mapping-Aktivität: Wo fanden zuetzt die meisten Edits statt?";
+    modeCur.title = "Färbung nach Mapping-Aktivität: Wo fanden die meisten Edits statt?";
     modeCur.classList.add("tip");
   }
   if (modeFeat) {
@@ -791,6 +1029,7 @@ async function main(): Promise<void> {
     const go = async () => {
       if (nextDate && nextDate !== snapshotId) await applySnapshot(nextDate);
       applyLink(link);
+      syncFilterAvailability();
       handles?.setFilter(filter);
       handles?.setMode(mode);
       handles?.setSelection(selected);

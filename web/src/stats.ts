@@ -241,11 +241,23 @@ function median(values: number[]): number {
 export interface ViewportSummary {
   /** null until cells.bin.gz arrived; everything else comes from the tiles. */
   mappers: number | null;
-  objects: number;
+  /** null while hex tiles for the viewport are still loading. */
+  objects: number | null;
   currentness: number;
   level: ActivityLevel;
-  /** Share of visible cells (incl. empty) with activityLevel 6 or 7. */
-  highShare: number;
+  /** Share of visible cells (incl. empty) with activityLevel 6 or 7; null while tiles load. */
+  highShare: number | null;
+}
+
+/** Placeholder while rendered hexes (and thus live counts) are not available yet. */
+export function pendingViewportSummary(mappers: number | null = null): ViewportSummary {
+  return {
+    mappers,
+    objects: null,
+    currentness: 0,
+    level: 0,
+    highShare: null,
+  };
 }
 
 export function viewportSummary(
@@ -371,8 +383,26 @@ export function maxActivityScore(meta: SnapshotMeta, filter: FilterId): number {
   return Math.max(1, meta.max_score?.[filter] ?? 0);
 }
 
-export function maxFeatureCount(meta: SnapshotMeta, filter: FilterId): number {
-  return Math.max(1, meta.max_count?.[filter] ?? 0);
+export function mergeMaxCount(
+  ...sources: Array<Partial<Record<FilterId, number>> | null | undefined>
+): Partial<Record<FilterId, number>> {
+  const out: Partial<Record<FilterId, number>> = {};
+  for (const src of sources) {
+    if (!src) continue;
+    for (const key of Object.keys(src) as FilterId[]) {
+      const n = src[key];
+      if (typeof n === "number" && Number.isFinite(n) && n > (out[key] ?? 0)) out[key] = n;
+    }
+  }
+  return out;
+}
+
+export function maxFeatureCount(
+  meta: SnapshotMeta,
+  filter: FilterId,
+  scale?: Partial<Record<FilterId, number>> | null,
+): number {
+  return Math.max(1, scale?.[filter] ?? meta.max_count?.[filter] ?? 0);
 }
 
 /** 0–1 log1p scale against the dataset max for this filter. */
