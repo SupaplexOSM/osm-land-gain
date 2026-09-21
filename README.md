@@ -84,12 +84,7 @@ Unter den Hexagonen liegt eine dezente [OpenFreeMap](https://openfreemap.org)-Ba
 
 ### Quartals-Stände
 
-**Datenstichtag** ist jeweils der **21.** März, Juni, September und Dezember. Die GitHub Action läuft am **22.** um 6:20 (Europe/Berlin), wenn der Extract des 21. typischerweise online ist. Anzeige:
-
-- 21. März → Frühling $Jahr
-- 21. Juni → Sommer $Jahr
-- 21. September → Herbst $Jahr
-- 21. Dezember → Winter $Jahr
+**Datenstichtag** ist jeweils der **21.** März, Juni, September und Dezember. Die GitHub Action läuft am **22.** um 6:20 (Europe/Berlin), wenn der Extract des 21. typischerweise online ist.
 
 Die letzten **12 Quartale** bleiben auf der Zeitleiste; ältere **21.-Dezember**-Ordner bleiben als Jahresgeschichte. Andere Quartale außerhalb des Fensters werden beim Manifest-Schreiben entfernt. Das Archiv liegt nur auf `gh-pages`; die Action holt bestehende Ordner vor jedem Lauf zurück.
 
