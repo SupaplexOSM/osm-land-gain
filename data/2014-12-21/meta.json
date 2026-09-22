@@ -1,0 +1,73 @@
+{
+  "generated": "2014-12-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    12.76,
+    52.23,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ]
+  ],
+  "max_score": {
+    "all": 1977.03,
+    "highway": 244.136,
+    "building": 1976.383,
+    "landuse": 344.0,
+    "place": 54.2,
+    "furniture": 105.014,
+    "notes": 8.0,
+    "streetcomplete": 0.0
+  },
+  "max_count": {
+    "all": 2796,
+    "highway": 382,
+    "building": 2631,
+    "landuse": 510,
+    "place": 129,
+    "furniture": 154,
+    "notes": 13,
+    "streetcomplete": 0
+  },
+  "max_zoom": 12,
+  "id": "2014-12-21",
+  "date": "2014-12-21",
+  "season": "winter",
+  "short": "Winter 2014",
+  "label": "Datenstand: Winter 2014",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2014",
+  "year": 2014
+}

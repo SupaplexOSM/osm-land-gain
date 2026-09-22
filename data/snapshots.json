@@ -1,0 +1,277 @@
+{
+  "snapshots": [
+    {
+      "id": "2023-12-21",
+      "date": "2023-12-21",
+      "season": "winter",
+      "short": "Winter 2023",
+      "label": "Datenstand: Winter 2023",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2023",
+      "year": 2023
+    },
+    {
+      "id": "2024-03-21",
+      "date": "2024-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2024",
+      "label": "Datenstand: Frühling 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2023 bis 21. März 2024",
+      "year": 2024
+    },
+    {
+      "id": "2024-06-21",
+      "date": "2024-06-21",
+      "season": "sommer",
+      "short": "Sommer 2024",
+      "label": "Datenstand: Sommer 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2024",
+      "year": 2024
+    },
+    {
+      "id": "2024-09-21",
+      "date": "2024-09-21",
+      "season": "herbst",
+      "short": "Herbst 2024",
+      "label": "Datenstand: Herbst 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2024",
+      "year": 2024
+    },
+    {
+      "id": "2024-12-21",
+      "date": "2024-12-21",
+      "season": "winter",
+      "short": "Winter 2024",
+      "label": "Datenstand: Winter 2024",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2024",
+      "year": 2024
+    },
+    {
+      "id": "2025-03-21",
+      "date": "2025-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2025",
+      "label": "Datenstand: Frühling 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2024 bis 21. März 2025",
+      "year": 2025
+    },
+    {
+      "id": "2025-06-21",
+      "date": "2025-06-21",
+      "season": "sommer",
+      "short": "Sommer 2025",
+      "label": "Datenstand: Sommer 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2025",
+      "year": 2025
+    },
+    {
+      "id": "2025-09-21",
+      "date": "2025-09-21",
+      "season": "herbst",
+      "short": "Herbst 2025",
+      "label": "Datenstand: Herbst 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2025",
+      "year": 2025
+    },
+    {
+      "id": "2025-12-21",
+      "date": "2025-12-21",
+      "season": "winter",
+      "short": "Winter 2025",
+      "label": "Datenstand: Winter 2025",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2025",
+      "year": 2025
+    },
+    {
+      "id": "2026-03-21",
+      "date": "2026-03-21",
+      "season": "fruehling",
+      "short": "Frühling 2026",
+      "label": "Datenstand: Frühling 2026",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Dezember 2025 bis 21. März 2026",
+      "year": 2026
+    },
+    {
+      "id": "2026-06-21",
+      "date": "2026-06-21",
+      "season": "sommer",
+      "short": "Sommer 2026",
+      "label": "Datenstand: Sommer 2026",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. März bis 21. Juni 2026",
+      "year": 2026
+    },
+    {
+      "id": "2026-09-21",
+      "date": "2026-09-21",
+      "season": "herbst",
+      "short": "Herbst 2026",
+      "label": "Datenstand: Herbst 2026",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2026",
+      "year": 2026
+    }
+  ],
+  "history": [
+    {
+      "id": "2006-12-21",
+      "date": "2006-12-21",
+      "season": "winter",
+      "short": "Winter 2006",
+      "label": "Datenstand: Winter 2006",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2006",
+      "year": 2006
+    },
+    {
+      "id": "2007-12-21",
+      "date": "2007-12-21",
+      "season": "winter",
+      "short": "Winter 2007",
+      "label": "Datenstand: Winter 2007",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2007",
+      "year": 2007
+    },
+    {
+      "id": "2008-12-21",
+      "date": "2008-12-21",
+      "season": "winter",
+      "short": "Winter 2008",
+      "label": "Datenstand: Winter 2008",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2008",
+      "year": 2008
+    },
+    {
+      "id": "2009-12-21",
+      "date": "2009-12-21",
+      "season": "winter",
+      "short": "Winter 2009",
+      "label": "Datenstand: Winter 2009",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2009",
+      "year": 2009
+    },
+    {
+      "id": "2010-12-21",
+      "date": "2010-12-21",
+      "season": "winter",
+      "short": "Winter 2010",
+      "label": "Datenstand: Winter 2010",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2010",
+      "year": 2010
+    },
+    {
+      "id": "2011-12-21",
+      "date": "2011-12-21",
+      "season": "winter",
+      "short": "Winter 2011",
+      "label": "Datenstand: Winter 2011",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2011",
+      "year": 2011
+    },
+    {
+      "id": "2012-12-21",
+      "date": "2012-12-21",
+      "season": "winter",
+      "short": "Winter 2012",
+      "label": "Datenstand: Winter 2012",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2012",
+      "year": 2012
+    },
+    {
+      "id": "2013-12-21",
+      "date": "2013-12-21",
+      "season": "winter",
+      "short": "Winter 2013",
+      "label": "Datenstand: Winter 2013",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2013",
+      "year": 2013
+    },
+    {
+      "id": "2014-12-21",
+      "date": "2014-12-21",
+      "season": "winter",
+      "short": "Winter 2014",
+      "label": "Datenstand: Winter 2014",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2014",
+      "year": 2014
+    },
+    {
+      "id": "2015-12-21",
+      "date": "2015-12-21",
+      "season": "winter",
+      "short": "Winter 2015",
+      "label": "Datenstand: Winter 2015",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2015",
+      "year": 2015
+    },
+    {
+      "id": "2016-12-21",
+      "date": "2016-12-21",
+      "season": "winter",
+      "short": "Winter 2016",
+      "label": "Datenstand: Winter 2016",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2016",
+      "year": 2016
+    },
+    {
+      "id": "2017-12-21",
+      "date": "2017-12-21",
+      "season": "winter",
+      "short": "Winter 2017",
+      "label": "Datenstand: Winter 2017",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2017",
+      "year": 2017
+    },
+    {
+      "id": "2018-12-21",
+      "date": "2018-12-21",
+      "season": "winter",
+      "short": "Winter 2018",
+      "label": "Datenstand: Winter 2018",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2018",
+      "year": 2018
+    },
+    {
+      "id": "2019-12-21",
+      "date": "2019-12-21",
+      "season": "winter",
+      "short": "Winter 2019",
+      "label": "Datenstand: Winter 2019",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2019",
+      "year": 2019
+    },
+    {
+      "id": "2020-12-21",
+      "date": "2020-12-21",
+      "season": "winter",
+      "short": "Winter 2020",
+      "label": "Datenstand: Winter 2020",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2020",
+      "year": 2020
+    },
+    {
+      "id": "2021-12-21",
+      "date": "2021-12-21",
+      "season": "winter",
+      "short": "Winter 2021",
+      "label": "Datenstand: Winter 2021",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2021",
+      "year": 2021
+    },
+    {
+      "id": "2022-12-21",
+      "date": "2022-12-21",
+      "season": "winter",
+      "short": "Winter 2022",
+      "label": "Datenstand: Winter 2022",
+      "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2022",
+      "year": 2022
+    }
+  ],
+  "max_count": {
+    "all": 5342,
+    "highway": 711,
+    "building": 2647,
+    "landuse": 940,
+    "place": 237,
+    "furniture": 431,
+    "notes": 115,
+    "streetcomplete": 670
+  }
+}

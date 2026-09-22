@@ -1,0 +1,73 @@
+{
+  "generated": "2020-12-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    12.76,
+    52.23,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ]
+  ],
+  "max_score": {
+    "all": 2610.532,
+    "highway": 409.03,
+    "building": 2604.422,
+    "landuse": 249.91,
+    "place": 126.312,
+    "furniture": 165.736,
+    "notes": 38.005,
+    "streetcomplete": 273.816
+  },
+  "max_count": {
+    "all": 3111,
+    "highway": 598,
+    "building": 2630,
+    "landuse": 545,
+    "place": 237,
+    "furniture": 359,
+    "notes": 114,
+    "streetcomplete": 424
+  },
+  "max_zoom": 12,
+  "id": "2020-12-21",
+  "date": "2020-12-21",
+  "season": "winter",
+  "short": "Winter 2020",
+  "label": "Datenstand: Winter 2020",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2020",
+  "year": 2020
+}

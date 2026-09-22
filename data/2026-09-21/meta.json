@@ -1,0 +1,73 @@
+{
+  "generated": "2026-09-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    12.76,
+    52.23,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ]
+  ],
+  "max_score": {
+    "all": 1088.133,
+    "highway": 273.917,
+    "building": 215.319,
+    "landuse": 669.25,
+    "place": 162.0,
+    "furniture": 175.0,
+    "notes": 26.0,
+    "streetcomplete": 487.731
+  },
+  "max_count": {
+    "all": 3367,
+    "highway": 708,
+    "building": 2646,
+    "landuse": 940,
+    "place": 231,
+    "furniture": 431,
+    "notes": 115,
+    "streetcomplete": 670
+  },
+  "max_zoom": 12,
+  "id": "2026-09-21",
+  "date": "2026-09-21",
+  "season": "herbst",
+  "short": "Herbst 2026",
+  "label": "Datenstand: Herbst 2026",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. Juni bis 21. September 2026",
+  "year": 2026
+}

@@ -1,0 +1,73 @@
+{
+  "generated": "2012-12-21",
+  "h3_res": 9,
+  "filters": [
+    "all",
+    "highway",
+    "building",
+    "landuse",
+    "place",
+    "furniture",
+    "notes",
+    "streetcomplete"
+  ],
+  "sparse_count": {
+    "all": 20,
+    "highway": 12,
+    "building": 8,
+    "landuse": 8,
+    "place": 3,
+    "furniture": 4,
+    "notes": 2,
+    "streetcomplete": 4
+  },
+  "active_days": 90,
+  "bbox": [
+    12.76,
+    52.23,
+    13.98,
+    52.82
+  ],
+  "bboxes": [
+    [
+      13.008,
+      52.325,
+      13.77,
+      52.687
+    ],
+    [
+      12.76,
+      52.23,
+      13.98,
+      52.82
+    ]
+  ],
+  "max_score": {
+    "all": 5201.915,
+    "highway": 122.0,
+    "building": 255.8,
+    "landuse": 245.476,
+    "place": 92.0,
+    "furniture": 50.321,
+    "notes": 0.0,
+    "streetcomplete": 0.0
+  },
+  "max_count": {
+    "all": 5342,
+    "highway": 159,
+    "building": 340,
+    "landuse": 347,
+    "place": 125,
+    "furniture": 82,
+    "notes": 0,
+    "streetcomplete": 0
+  },
+  "max_zoom": 12,
+  "id": "2012-12-21",
+  "date": "2012-12-21",
+  "season": "winter",
+  "short": "Winter 2012",
+  "label": "Datenstand: Winter 2012",
+  "period": "OSM-Bearbeitungen im Zeitraum 21. September bis 21. Dezember 2012",
+  "year": 2012
+}
